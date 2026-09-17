@@ -1,0 +1,89 @@
+# Bootstrap sync — the high-frequency job.
+# Pulls bootstrap-static into players / teams / gameweeks: prices, status,
+# injury flags. Every 30 minutes while the season is running.
+
+name: ingest-bootstrap
+
+on:
+  schedule:
+    # Every 30 minutes, on the hour and the half hour (UTC).
+    - cron: "0,30 * * * *"
+  workflow_dispatch:
+    inputs:
+      ignore_season_guard:
+        description: "Run even if the off-season guard says it is summer"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  # One bootstrap sync at a time. A slow run must not overlap the next tick.
+  group: ingest-bootstrap
+  cancel-in-progress: false
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Off-season guard
+        id: guard
+        env:
+          FORCE: ${{ inputs.ignore_season_guard }}
+        run: |
+          # Between late May and mid-August element ids are reassigned, three
+          # clubs are replaced, fixtures do not exist, and most of the API
+          # returns nulls or last season's data. Hammering it every 30 minutes
+          # for three months buys nothing and raises the odds of a block.
+          #
+          # This is a date heuristic, not a fact about the season: the real
+          # first and last fixture move by a week or two each year, and a
+          # summer tournament shifts them further. It is deliberately loose at
+          # both ends, and `workflow_dispatch` with ignore_season_guard can
+          # always override it. Once `gameweeks` is populated, the honest
+          # version of this check is "is there a deadline within N days", which
+          # is a database read rather than a calendar guess.
+          month=$(date -u +%m)
+          day=$(date -u +%d)
+          in_season=true
+          # Written as plain `if`s rather than `[ ... ] && ...`: the steps run
+          # under `bash -e`, where a test that is simply false would end the
+          # list non-zero and fail the step.
+          if [ "$month" = "06" ] || [ "$month" = "07" ]; then
+            in_season=false
+          elif [ "$month" = "05" ] && [ "$day" -ge 25 ]; then
+            in_season=false
+          elif [ "$month" = "08" ] && [ "$day" -le 10 ]; then
+            in_season=false
+          fi
+          if [ "$FORCE" = "true" ]; then
+            echo "Season guard overridden by workflow_dispatch input."
+            in_season=true
+          fi
+          echo "in_season=$in_season" >> "$GITHUB_OUTPUT"
+          if [ "$in_season" = "false" ]; then
+            echo "Off-season ($(date -u +%Y-%m-%d)). Skipping bootstrap sync."
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.guard.outputs.in_season == 'true'
+
+      - uses: actions/setup-python@v5
+        if: steps.guard.outputs.in_season == 'true'
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: ingest/requirements.txt
+
+      - name: Install dependencies
+        if: steps.guard.outputs.in_season == 'true'
+        run: python -m pip install -r ingest/requirements.txt
+
+      - name: Sync bootstrap-static
+        if: steps.guard.outputs.in_season == 'true'
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          FPL_USER_AGENT: ${{ secrets.FPL_USER_AGENT }}
+        run: python ingest/sync_bootstrap.py

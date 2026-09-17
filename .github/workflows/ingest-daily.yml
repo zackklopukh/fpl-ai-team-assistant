@@ -1,0 +1,152 @@
+# Daily ingestion — the three jobs that run once a day, in dependency order:
+#
+#   01:45 UTC  snapshot_prices.py  price_history, just after FPL's ~01:30 moves
+#   04:00 UTC  sync_fixtures.py    fixtures, FDR and kickoff changes
+#   05:00 UTC  compute_xp.py       xpoints for the next 5 gameweeks
+#
+# They live in one file because they share setup and have a real ordering:
+# prices, then fixtures, then the model that reads both. On a schedule only the
+# job whose cron fired runs; a manual run defaults to all three, in order.
+
+name: ingest-daily
+
+on:
+  schedule:
+    # 01:45 UTC daily — price snapshot.
+    - cron: "45 1 * * *"
+    # 04:00 UTC daily — fixtures.
+    - cron: "0 4 * * *"
+    # 05:00 UTC daily — xP recompute.
+    - cron: "0 5 * * *"
+  workflow_dispatch:
+    inputs:
+      job:
+        description: "Which job to run"
+        type: choice
+        default: all
+        options:
+          - all
+          - prices
+          - fixtures
+          - xp
+
+permissions:
+  contents: read
+
+concurrency:
+  # Shared across all three crons: the 04:00 fixtures run must not start while
+  # a stuck 01:45 price snapshot still holds the connection.
+  group: ingest-daily
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      prices: ${{ steps.decide.outputs.prices }}
+      fixtures: ${{ steps.decide.outputs.fixtures }}
+      xp: ${{ steps.decide.outputs.xp }}
+    steps:
+      - name: Decide which jobs run
+        id: decide
+        env:
+          SCHEDULE: ${{ github.event.schedule }}
+          CHOICE: ${{ inputs.job }}
+        run: |
+          prices=false
+          fixtures=false
+          xp=false
+          case "$SCHEDULE" in
+            "45 1 * * *") prices=true ;;
+            "0 4 * * *")  fixtures=true ;;
+            "0 5 * * *")  xp=true ;;
+          esac
+          case "$CHOICE" in
+            all)      prices=true; fixtures=true; xp=true ;;
+            prices)   prices=true ;;
+            fixtures) fixtures=true ;;
+            xp)       xp=true ;;
+          esac
+          echo "prices=$prices"     >> "$GITHUB_OUTPUT"
+          echo "fixtures=$fixtures" >> "$GITHUB_OUTPUT"
+          echo "xp=$xp"             >> "$GITHUB_OUTPUT"
+          echo "prices=$prices fixtures=$fixtures xp=$xp"
+
+  prices:
+    needs: plan
+    if: needs.plan.outputs.prices == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: ingest/requirements.txt
+      - name: Install dependencies
+        run: python -m pip install -r ingest/requirements.txt
+      - name: Snapshot prices
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          FPL_USER_AGENT: ${{ secrets.FPL_USER_AGENT }}
+        run: python ingest/snapshot_prices.py
+
+  fixtures:
+    needs: [plan, prices]
+    # `always()` so that a schedule which only asked for fixtures is not
+    # skipped along with the price job it did not run; the explicit result
+    # check still stops fixtures from running on top of a failed snapshot.
+    if: >-
+      always()
+      && needs.plan.result == 'success'
+      && needs.plan.outputs.fixtures == 'true'
+      && needs.prices.result != 'failure'
+      && needs.prices.result != 'cancelled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: ingest/requirements.txt
+      - name: Install dependencies
+        run: python -m pip install -r ingest/requirements.txt
+      - name: Sync fixtures
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          FPL_USER_AGENT: ${{ secrets.FPL_USER_AGENT }}
+        run: python ingest/sync_fixtures.py
+
+  xp:
+    needs: [plan, prices, fixtures]
+    # xP reads fixtures, so it declines to run on top of a failed fixtures sync
+    # rather than recomputing the model against yesterday's schedule.
+    if: >-
+      always()
+      && needs.plan.result == 'success'
+      && needs.plan.outputs.xp == 'true'
+      && needs.prices.result != 'failure'
+      && needs.prices.result != 'cancelled'
+      && needs.fixtures.result != 'failure'
+      && needs.fixtures.result != 'cancelled'
+    runs-on: ubuntu-latest
+    # The model is the slowest of the three and gets the most headroom.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: ingest/requirements.txt
+      - name: Install dependencies
+        run: python -m pip install -r ingest/requirements.txt
+      - name: Recompute xPoints
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          FPL_USER_AGENT: ${{ secrets.FPL_USER_AGENT }}
+        run: python ingest/compute_xp.py

@@ -1,0 +1,91 @@
+# CI. Python and Node run as separate jobs so they run in parallel and fail
+# independently — a TypeScript error should not hide a solver regression.
+
+name: tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: python (ingest + optimizer)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: |
+            ingest/requirements.txt
+            optimizer/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r ingest/requirements.txt
+          python -m pip install -r optimizer/requirements.txt
+
+      - name: pytest ingest
+        # No DATABASE_URL and no FPL_USER_AGENT here on purpose: the tests must
+        # not need a database or the network.
+        run: python -m pytest ingest/tests -q
+
+      - name: pytest optimizer
+        run: python -m pytest optimizer/tests -q
+
+  web:
+    name: web (typecheck + build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        # `npm ci` is the right command and the one that should normally run.
+        # It refuses to install when package.json and package-lock.json have
+        # drifted, which happens routinely while a dependency is being added,
+        # so fall back to `npm install` rather than failing CI on a lockfile
+        # that is merely one commit behind. The fallback is noisy in the log on
+        # purpose — if you see it, regenerate and commit the lockfile.
+        run: |
+          npm ci --no-audit --no-fund || {
+            echo "::warning title=Lockfile out of sync::npm ci failed; falling back to npm install. Regenerate and commit web/package-lock.json."
+            npm install --no-audit --no-fund
+          }
+
+      - name: Typecheck
+        # package.json has no typecheck script, so invoke the compiler in the
+        # project's own tsconfig directly.
+        run: npx --no-install tsc --noEmit
+
+      - name: Build
+        env:
+          # The build only needs these to be present and well-formed. Real
+          # values are used when they are configured; otherwise a placeholder
+          # keeps the build honest without putting anything real in CI.
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL || 'https://placeholder.supabase.co' }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'placeholder-anon-key' }}
+          OPTIMIZER_URL: ${{ secrets.OPTIMIZER_URL || 'http://127.0.0.1:8000' }}
+          NEXT_TELEMETRY_DISABLED: "1"
+        run: npm run build

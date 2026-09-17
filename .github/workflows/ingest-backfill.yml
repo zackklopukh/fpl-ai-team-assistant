@@ -1,0 +1,56 @@
+# Historical backfill — manual only, never on a schedule.
+#
+# backfill_history.py walks every player's element-summary to build the
+# training data the xP model needs. It is slow by design (serialised requests
+# with a sleep between them) and resumable, so a run that hits the timeout is
+# restarted with `from_element` set to wherever it stopped.
+
+name: ingest-backfill
+
+on:
+  workflow_dispatch:
+    inputs:
+      from_element:
+        description: "Resume from this element id (blank = start from the beginning)"
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  # Two backfills at once would double the request rate against the API this
+  # repo is most at risk of being blocked by.
+  group: ingest-backfill
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    # Deliberately long. Hundreds of players, one request each, politely
+    # spaced. GitHub's own ceiling for a job is 6 hours; this stops short of it
+    # so the run ends cleanly and prints where to resume from.
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: ingest/requirements.txt
+
+      - name: Install dependencies
+        run: python -m pip install -r ingest/requirements.txt
+
+      - name: Backfill history
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          FPL_USER_AGENT: ${{ secrets.FPL_USER_AGENT }}
+          FROM_ELEMENT: ${{ inputs.from_element }}
+        run: |
+          if [ -n "$FROM_ELEMENT" ]; then
+            python ingest/backfill_history.py --from-element "$FROM_ELEMENT"
+          else
+            python ingest/backfill_history.py
+          fi

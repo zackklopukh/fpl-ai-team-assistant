@@ -1,0 +1,104 @@
+# Live results — event/{gw}/live/ into player_gw_stats.
+#
+# Cron cannot know when a match is on, so this runs every 15 minutes across the
+# windows Premier League matches actually fall in (UTC), and the script itself
+# is expected to be a cheap no-op when nothing is in play. Bonus points settle
+# roughly two hours after the last whistle, which is why the windows run late
+# rather than stopping at full time.
+
+name: ingest-live
+
+on:
+  schedule:
+    # Weekends: every 15 minutes, 11:00–23:45 UTC (Sat 12:30 through the late
+    # Sunday kickoff, plus the bonus-settling tail).
+    - cron: "*/15 11-23 * * 6,0"
+    # Midweek: every 15 minutes, 17:00–23:45 UTC (evening kickoffs only).
+    - cron: "*/15 17-23 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      gameweek:
+        description: "Gameweek to sync (blank = the current one)"
+        type: string
+        required: false
+      ignore_season_guard:
+        description: "Run even if the off-season guard says it is summer"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  # The 15-minute cadence is the tightest in the repo. If a run is slow, the
+  # next tick queues behind it rather than writing the same rows concurrently.
+  group: ingest-live
+  cancel-in-progress: false
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    # Live sync is one endpoint and a batch of upserts. If it has not finished
+    # in eight minutes something is wrong and the next tick is nearly due.
+    timeout-minutes: 8
+    steps:
+      - name: Off-season guard
+        id: guard
+        env:
+          FORCE: ${{ inputs.ignore_season_guard }}
+        run: |
+          # Same date heuristic as ingest-bootstrap: no Premier League matches
+          # are played between late May and mid-August, so there is nothing to
+          # poll for. It is a calendar guess, not a fact — the real season
+          # boundaries move each year — so it is loose at both ends and can be
+          # overridden from workflow_dispatch. The accurate version of this
+          # check, once `gameweeks` is populated, is a database read for the
+          # next deadline.
+          month=$(date -u +%m)
+          day=$(date -u +%d)
+          in_season=true
+          # Written as plain `if`s rather than `[ ... ] && ...`: the steps run
+          # under `bash -e`, where a test that is simply false would end the
+          # list non-zero and fail the step.
+          if [ "$month" = "06" ] || [ "$month" = "07" ]; then
+            in_season=false
+          elif [ "$month" = "05" ] && [ "$day" -ge 25 ]; then
+            in_season=false
+          elif [ "$month" = "08" ] && [ "$day" -le 10 ]; then
+            in_season=false
+          fi
+          if [ "$FORCE" = "true" ]; then
+            echo "Season guard overridden by workflow_dispatch input."
+            in_season=true
+          fi
+          echo "in_season=$in_season" >> "$GITHUB_OUTPUT"
+          if [ "$in_season" = "false" ]; then
+            echo "Off-season ($(date -u +%Y-%m-%d)). No matches to poll."
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.guard.outputs.in_season == 'true'
+
+      - uses: actions/setup-python@v5
+        if: steps.guard.outputs.in_season == 'true'
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: ingest/requirements.txt
+
+      - name: Install dependencies
+        if: steps.guard.outputs.in_season == 'true'
+        run: python -m pip install -r ingest/requirements.txt
+
+      - name: Sync live results
+        if: steps.guard.outputs.in_season == 'true'
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          FPL_USER_AGENT: ${{ secrets.FPL_USER_AGENT }}
+          GAMEWEEK: ${{ inputs.gameweek }}
+        run: |
+          if [ -n "$GAMEWEEK" ]; then
+            python ingest/sync_live.py --gameweek "$GAMEWEEK"
+          else
+            python ingest/sync_live.py
+          fi

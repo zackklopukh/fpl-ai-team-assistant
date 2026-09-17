@@ -1,0 +1,8 @@
+# The optimizer is a separate deployable with a deliberately small dependency
+# set. It never talks to Postgres, so there is no database driver here.
+fastapi==0.120.4
+uvicorn[standard]==0.41.0
+pydantic==2.12.4
+pulp==3.3.0
+pytest==9.1.1
+httpx==0.28.1
