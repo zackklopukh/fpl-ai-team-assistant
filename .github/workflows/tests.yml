@@ -75,9 +75,10 @@ jobs:
           }
 
       - name: Typecheck
-        # package.json has no typecheck script, so invoke the compiler in the
-        # project's own tsconfig directly.
-        run: npx --no-install tsc --noEmit
+        # `next typegen` first: PageProps and LayoutProps are global types Next
+        # generates into .next/types, and on a fresh CI checkout nothing has
+        # built yet, so a bare tsc fails with "Cannot find name 'PageProps'".
+        run: npm run typecheck
 
       - name: Build
         env:
