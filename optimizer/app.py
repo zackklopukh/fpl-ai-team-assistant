@@ -21,7 +21,9 @@ import time
 from collections import OrderedDict
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 
 from optimizer.contract import SOLVER_VERSION, OptimizeRequest, OptimizeResponse
 from optimizer.greedy import SquadError, recommend
@@ -48,6 +50,26 @@ app = FastAPI(
     version=SOLVER_VERSION,
     description="Stateless squad solver. Receives a squad and returns ranked plans.",
 )
+
+
+@app.exception_handler(RequestValidationError)
+async def _one_shape_for_every_422(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
+    """Give pydantic's 422 the same shape as the hand-written squad checks.
+
+    FastAPI's default returns `detail` as a list of error objects while every
+    `HTTPException` in this module returns it as a sentence. Two shapes for one
+    status means every client writes its own parser, and the second shape is the
+    one they forget — so the contract has one shape and it is the readable one.
+    """
+    problems = []
+    for err in exc.errors():
+        # Drop the leading "body" segment; it names the framework, not the field.
+        location = ".".join(str(part) for part in err["loc"][1:]) or "request"
+        problems.append(f"{location}: {err['msg']}")
+
+    return JSONResponse(status_code=422, content={"detail": "; ".join(problems)})
 
 
 def _cache_key(req: OptimizeRequest, model_version: str, data_as_of: str) -> str:

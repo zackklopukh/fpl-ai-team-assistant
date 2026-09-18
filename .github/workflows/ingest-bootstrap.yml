@@ -1,13 +1,13 @@
 # Bootstrap sync — the high-frequency job.
 # Pulls bootstrap-static into players / teams / gameweeks: prices, status,
-# injury flags. Every 30 minutes while the season is running.
+# injury flags. Every 2 hours while the season is running.
 
 name: ingest-bootstrap
 
 on:
   schedule:
-    # Every 30 minutes, on the hour and the half hour (UTC).
-    - cron: "0,30 * * * *"
+    # Every 2 hours
+    - cron: "0 */2 * * *"
   workflow_dispatch:
     inputs:
       ignore_season_guard:

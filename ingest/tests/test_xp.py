@@ -534,24 +534,43 @@ class TestBuildXpRows:
         assert {r["season"] for r in rows} == {"2026-27"}
         assert {r["gw"] for r in rows} == {5, 6}
 
-    def test_a_team_without_a_gameweek_six_fixture_scores_zero(self, bootstrap, api_fixtures):
+    def test_a_team_blanking_scores_zero_while_the_rest_of_the_league_does_not(
+        self, bootstrap, api_fixtures
+    ):
+        """One club's blank, which is the shape a real blank takes.
+
+        The condition is constructed rather than inherited from the sample's
+        coverage: a fixture list that simply stops at some gameweek makes every
+        club blank at once, which is a league-wide shutdown and tests nothing
+        about the per-team join.
+        """
         players, stats, fixtures = self._inputs(bootstrap, api_fixtures)
+
+        blanking_team = int(players[0]["team_fpl_id"])
+        without = [
+            f
+            for f in fixtures
+            if not (
+                f["gw"] == 6
+                and blanking_team in (f["team_h_fpl_id"], f["team_a_fpl_id"])
+            )
+        ]
 
         rows = build_xp_rows(
             season="2026-27",
             player_rows=players,
             stat_rows=stats,
-            fixture_rows=fixtures,
-            target_gws=[5, 6],
+            fixture_rows=without,
+            target_gws=[6],
             as_of_gw=4,
         )
 
-        # No fixture was synthesised for gameweek 6, so it is a league-wide blank.
-        gw6 = [r for r in rows if r["gw"] == 6]
-        assert gw6 and all(r["xp"] == 0.0 for r in gw6)
+        teams = {int(p["element_id"]): int(p["team_fpl_id"]) for p in players}
+        blanked = [r for r in rows if teams[r["element_id"]] == blanking_team]
+        playing = [r for r in rows if teams[r["element_id"]] != blanking_team]
 
-        gw5 = [r for r in rows if r["gw"] == 5]
-        assert any(r["xp"] > 0.0 for r in gw5)
+        assert blanked and all(r["xp"] == 0.0 for r in blanked)
+        assert any(r["xp"] > 0.0 for r in playing)
 
     def test_rows_carry_the_shape_xpoints_expects(self, bootstrap, api_fixtures):
         players, stats, fixtures = self._inputs(bootstrap, api_fixtures)

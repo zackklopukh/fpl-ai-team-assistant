@@ -245,6 +245,8 @@ def recommend(
         captain=baseline.captain,
         vice_captain=baseline.vice_captain,
         delta_xp=0.0,
+        # Holding moves no money, so the bank is untouched.
+        bank_after=bank,
         per_gw_breakdown=_breakdown(held_by_id, baseline, gws),
         reasoning=_hold_reasoning(held_by_id, baseline, free_transfers),
     )
@@ -306,6 +308,7 @@ def recommend(
                         captain=lineup.captain,
                         vice_captain=lineup.vice_captain,
                         delta_xp=round(delta, 3),
+                        bank_after=bank_after,
                         per_gw_breakdown=_breakdown(new_by_id, lineup, gws),
                         reasoning=_transfer_reasoning(
                             out_p,

@@ -96,9 +96,23 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           FPL_USER_AGENT: ${{ secrets.FPL_USER_AGENT }}
           GAMEWEEK: ${{ inputs.gameweek }}
+        # Via run.py, which parses --gameweek properly. sync_live.py's own
+        # __main__ takes a bare positional and int("--gameweek") raises, so the
+        # manual-dispatch path used to fail on exactly the run someone reaches
+        # for when they are debugging at 11pm.
         run: |
           if [ -n "$GAMEWEEK" ]; then
-            python ingest/sync_live.py --gameweek "$GAMEWEEK"
+            python ingest/run.py live --gameweek "$GAMEWEEK"
           else
-            python ingest/sync_live.py
+            python ingest/run.py live
           fi
+
+      # Bonus is provisional until FPL settles it, so the rows this job just
+      # wrote are not final. Settling here costs one query when there is nothing
+      # to do, and the live windows already run late enough to catch the tail.
+      - name: Settle bonus for any finalised gameweek
+        if: steps.guard.outputs.in_season == 'true'
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          FPL_USER_AGENT: ${{ secrets.FPL_USER_AGENT }}
+        run: python ingest/run.py settle-bonus

@@ -45,6 +45,28 @@ function isConfigured(url: string | undefined): url is string {
   return url.startsWith("postgres://") || url.startsWith("postgresql://");
 }
 
+/**
+ * Strip `sslmode` from the connection string.
+ *
+ * node-postgres builds its own TLS config from an `sslmode` in the URL, and that
+ * takes precedence over the `ssl` option passed to the Pool — so a string
+ * carrying `?sslmode=require` fails against Supabase with "self-signed
+ * certificate in certificate chain" no matter what the Pool says. psycopg wants
+ * the parameter and node-postgres cannot live with it, so the one string in .env
+ * keeps it and this strips it on the way past.
+ */
+function withoutSslMode(url: string): string {
+  try {
+    const parsed = new URL(url);
+    parsed.searchParams.delete("sslmode");
+    return parsed.toString();
+  } catch {
+    // A string too malformed to parse is one the Pool will reject anyway, with a
+    // better message than anything invented here.
+    return url;
+  }
+}
+
 export const SEASON = process.env.FPL_SEASON?.trim() || seed.season;
 
 let pool: Pool | null = null;
@@ -53,7 +75,7 @@ function getPool(): Pool | null {
   if (!isConfigured(CONNECTION_STRING)) return null;
   if (!pool) {
     pool = new Pool({
-      connectionString: CONNECTION_STRING,
+      connectionString: withoutSslMode(CONNECTION_STRING),
       max: 3,
       idleTimeoutMillis: 10_000,
       connectionTimeoutMillis: 5_000,

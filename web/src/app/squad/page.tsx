@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 
 import SquadBuilder from "@/components/SquadBuilder";
-import { dataSource, getPlayers } from "@/lib/db";
+import { dataSource, getCurrentGameweek, getPlayers } from "@/lib/db";
 import { POSITION_BY_ELEMENT_TYPE, type SquadPlayer } from "@/lib/squad";
 import type { PlayerWithTeam } from "@/lib/types";
 
@@ -34,7 +34,10 @@ function toSquadPlayer(player: PlayerWithTeam): SquadPlayer {
 }
 
 export default async function SquadPage() {
-  const players = await getPlayers();
+  const [players, gameweek] = await Promise.all([
+    getPlayers(),
+    getCurrentGameweek(),
+  ]);
   const options = players.map(toSquadPlayer);
   const source = dataSource();
 
@@ -51,8 +54,12 @@ export default async function SquadPage() {
         </p>
       </header>
 
+      {/* currentGw is the gameweek advice is asked for. Letting it default
+          silently would ask the optimizer about the wrong week, and the answer
+          would look like a model error rather than a plumbing one. */}
       <SquadBuilder
         players={options}
+        currentGw={gameweek?.gw}
         dataNote={
           source === "seed"
             ? `Prices from the bundled sample data (${options.length} players) — set DATABASE_URL for the live list.`

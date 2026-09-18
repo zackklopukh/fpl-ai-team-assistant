@@ -14,6 +14,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 
+import AdvicePanel from "@/components/AdvicePanel";
 import PlayerPicker from "@/components/PlayerPicker";
 import { formatPrice } from "@/lib/format";
 import {
@@ -36,6 +37,11 @@ export interface SquadBuilderProps {
   players: readonly SquadPlayer[];
   /** Shown so a user knows how fresh the prices are. */
   dataNote?: string;
+  /**
+   * The gameweek to plan from. Optional: when the page does not supply one the
+   * advice panel starts at gameweek 1 and the user can correct it.
+   */
+  currentGw?: number | null;
 }
 
 /** "5.5" -> 55. The one direction pounds are allowed to travel, and only here. */
@@ -56,7 +62,11 @@ function tenthsToInput(tenths: number): string {
   return `${sign}${Math.floor(abs / 10)}.${abs % 10}`;
 }
 
-export default function SquadBuilder({ players, dataNote }: SquadBuilderProps) {
+export default function SquadBuilder({
+  players,
+  dataNote,
+  currentGw,
+}: SquadBuilderProps) {
   const index = useMemo(() => buildPlayerIndex(players), [players]);
 
   const byPosition = useMemo(() => {
@@ -278,6 +288,17 @@ export default function SquadBuilder({ players, dataNote }: SquadBuilderProps) {
           </section>
         ))}
       </div>
+
+      {/* The payoff: a legal fifteen turned into ranked, explained advice.
+          Mounted here rather than on its own page so the squad and the answer
+          stay on screen together — a recommendation you have to navigate away
+          from to read is one you cannot check against your own squad. */}
+      <AdvicePanel
+        squad={squad}
+        index={index}
+        squadValid={validation.valid}
+        currentGw={currentGw}
+      />
 
       {/* Bank, share and reset. */}
       <section className="flex flex-col gap-4 rounded-lg border border-slate-200 p-4 dark:border-slate-800">
