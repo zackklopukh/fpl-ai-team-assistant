@@ -35,6 +35,12 @@ export interface PlayerPickerProps {
   /** What this slot can spend without going into the red: bank + any refund. */
   affordableTenths: number;
   onPick: (player: SquadPlayer | null) => void;
+  /**
+   * Open straight into search. Used when a pitch card was just clicked: the
+   * click was already the "change this player" gesture, so a second one would
+   * be busywork.
+   */
+  startEditing?: boolean;
 }
 
 function matches(player: SquadPlayer, query: string): boolean {
@@ -57,8 +63,9 @@ export default function PlayerPicker({
   fullClubs,
   affordableTenths,
   onPick,
+  startEditing = false,
 }: PlayerPickerProps) {
-  const [editing, setEditing] = useState(false);
+  const [editing, setEditing] = useState(startEditing);
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
 

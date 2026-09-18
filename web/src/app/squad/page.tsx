@@ -1,7 +1,9 @@
 import type { Metadata } from "next";
 
 import SquadBuilder from "@/components/SquadBuilder";
-import { dataSource, getCurrentGameweek, getPlayers } from "@/lib/db";
+import { dataSource, getCurrentGameweek, getPlayers, getTeams } from "@/lib/db";
+import { getFixturesInRange } from "@/lib/fixtures";
+import { buildNextFixtures } from "@/lib/nextFixtures";
 import { POSITION_BY_ELEMENT_TYPE, type SquadPlayer } from "@/lib/squad";
 import type { PlayerWithTeam } from "@/lib/types";
 
@@ -27,6 +29,7 @@ function toSquadPlayer(player: PlayerWithTeam): SquadPlayer {
     teamFplId: player.team_fpl_id,
     teamName: player.team_name,
     teamShortName: player.team_short_name,
+    teamCode: player.team_code,
     priceTenths: player.now_cost_tenths,
     status: player.status,
     totalPoints: player.total_points,
@@ -34,12 +37,24 @@ function toSquadPlayer(player: PlayerWithTeam): SquadPlayer {
 }
 
 export default async function SquadPage() {
-  const [players, gameweek] = await Promise.all([
+  const [players, gameweek, teams] = await Promise.all([
     getPlayers(),
     getCurrentGameweek(),
+    getTeams(),
   ]);
   const options = players.map(toSquadPlayer);
   const source = dataSource();
+
+  // Opponents for the gameweek being planned, for the cards on the pitch.
+  const nextGw = gameweek?.gw ?? null;
+  const nextFixtures =
+    nextGw == null
+      ? {}
+      : buildNextFixtures(
+          await getFixturesInRange(nextGw, nextGw),
+          new Map(teams.map((t) => [t.fpl_id, t.short_name])),
+          nextGw,
+        );
 
   return (
     <div className="mx-auto w-full max-w-5xl px-4 py-10 sm:px-6 lg:px-8">
@@ -60,6 +75,8 @@ export default async function SquadPage() {
       <SquadBuilder
         players={options}
         currentGw={gameweek?.gw}
+        nextFixtures={nextFixtures}
+        nextGw={nextGw}
         dataNote={
           source === "seed"
             ? `Prices from the bundled sample data (${options.length} players) — set DATABASE_URL for the live list.`

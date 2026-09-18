@@ -15,8 +15,10 @@
 import { useEffect, useMemo, useState } from "react";
 
 import AdvicePanel from "@/components/AdvicePanel";
+import Pitch from "@/components/Pitch";
 import PlayerPicker from "@/components/PlayerPicker";
 import { formatPrice } from "@/lib/format";
+import type { NextFixturesByTeam } from "@/lib/nextFixtures";
 import {
   BUDGET_TENTHS,
   MAX_PER_CLUB,
@@ -42,6 +44,13 @@ export interface SquadBuilderProps {
    * advice panel starts at gameweek 1 and the user can correct it.
    */
   currentGw?: number | null;
+  /**
+   * Each club's opponents in the next gameweek, for the cards. A club mapped to
+   * [] has a blank; one mapped to two entries has a double.
+   */
+  nextFixtures?: NextFixturesByTeam;
+  /** The gameweek `nextFixtures` describes, for the caption under the pitch. */
+  nextGw?: number | null;
 }
 
 /** "5.5" -> 55. The one direction pounds are allowed to travel, and only here. */
@@ -66,8 +75,21 @@ export default function SquadBuilder({
   players,
   dataNote,
   currentGw,
+  nextFixtures = {},
+  nextGw,
 }: SquadBuilderProps) {
   const index = useMemo(() => buildPlayerIndex(players), [players]);
+
+  // Which pitch slot the picker below is editing. `openCount` is part of the
+  // picker's key so that every card click remounts it straight into search —
+  // including a second click on the same card after the picker was closed.
+  const [activeSlot, setActiveSlot] = useState<number | null>(null);
+  const [openCount, setOpenCount] = useState(0);
+
+  function selectSlot(slotIndex: number) {
+    setActiveSlot(slotIndex);
+    setOpenCount((n) => n + 1);
+  }
 
   const byPosition = useMemo(() => {
     const map: Record<Position, SquadPlayer[]> = { GKP: [], DEF: [], MID: [], FWD: [] };
@@ -153,10 +175,12 @@ export default function SquadBuilder({
         </div>
       )}
 
-      {/* Running totals. Sticky, because the numbers are the point of the form. */}
+      {/* Running totals. Sticky from `sm` up, where it is one slim row. On a
+          phone it wraps to two rows plus club chips — tall enough to cover the
+          pitch entirely while scrolling through it — so there it scrolls away. */}
       <section
         aria-label="Squad totals"
-        className="sticky top-0 z-10 rounded-lg border border-slate-200 bg-white/95 p-4 backdrop-blur dark:border-slate-800 dark:bg-slate-950/95"
+        className="z-10 rounded-lg border border-slate-200 bg-white/95 p-4 backdrop-blur sm:sticky sm:top-0 dark:border-slate-800 dark:bg-slate-950/95"
       >
         <dl className="grid grid-cols-2 gap-4 sm:grid-cols-4">
           <div>
@@ -248,46 +272,85 @@ export default function SquadBuilder({
         ))}
       </section>
 
-      {/* The fifteen slots. */}
-      <div className="grid gap-6 sm:grid-cols-2">
-        {POSITIONS.map((position) => (
-          <section key={position} aria-label={`${POSITION_LABEL[position]}s`}>
-            <h2 className="mb-2 flex items-baseline justify-between text-sm font-semibold text-slate-900 dark:text-slate-100">
-              <span>{POSITION_LABEL[position]}s</span>
-              <span className="text-xs font-normal tabular-nums text-slate-500 dark:text-slate-400">
-                {validation.positionCounts[position]}/{SQUAD_QUOTA[position]}
+      {/* The fifteen, on a pitch. Click a card to change that slot. */}
+      <section aria-label="Your squad" className="flex flex-col gap-3">
+        <Pitch
+          squad={squad}
+          index={index}
+          nextFixtures={nextFixtures}
+          activeSlot={activeSlot}
+          onSelectSlot={selectSlot}
+        />
+
+        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500 dark:text-slate-400">
+          <span className="flex gap-3 tabular-nums">
+            {POSITIONS.map((position) => (
+              <span key={position}>
+                {position}{" "}
+                <span
+                  className={
+                    validation.positionCounts[position] === SQUAD_QUOTA[position]
+                      ? "text-emerald-700 dark:text-emerald-400"
+                      : ""
+                  }
+                >
+                  {validation.positionCounts[position]}/{SQUAD_QUOTA[position]}
+                </span>
               </span>
-            </h2>
-            <ol className="flex flex-col gap-2">
-              {SLOT_POSITIONS.map((slotPosition, slotIndex) =>
-                slotPosition !== position ? null : (
-                  <li key={slotIndex}>
-                    <PlayerPicker
-                      slotIndex={slotIndex}
-                      position={position}
-                      selected={
-                        squad.picks[slotIndex] != null
-                          ? index.get(squad.picks[slotIndex] as number) ?? null
-                          : null
-                      }
-                      options={byPosition[position]}
-                      pickedIds={pickedIds}
-                      fullClubs={fullClubs}
-                      affordableTenths={
-                        squad.bankTenths +
-                        (squad.picks[slotIndex] != null
-                          ? index.get(squad.picks[slotIndex] as number)?.priceTenths ?? 0
-                          : 0)
-                      }
-                      onPick={(player) => setPick(slotIndex, player)}
-                    />
-                  </li>
-                ),
-              )}
-            </ol>
-          </section>
-        ))}
-      </div>
+            ))}
+          </span>
+          {nextGw != null && (
+            <span>
+              Opponents shown are for gameweek {nextGw}. — means no fixture.
+            </span>
+          )}
+        </div>
+
+        {/* The editor for whichever card was clicked. The picker is the same
+            accessible combobox the slot list used, so search, keyboard use and
+            the budget and club-limit warnings all carry over unchanged. */}
+        {activeSlot == null ? (
+          <p className="rounded-lg border border-dashed border-slate-300 px-4 py-3 text-sm text-slate-500 dark:border-slate-700 dark:text-slate-400">
+            Click a shirt, or an empty slot, to pick a player for it.
+          </p>
+        ) : (
+          (() => {
+            const position = SLOT_POSITIONS[activeSlot];
+            const id = squad.picks[activeSlot];
+            const selected = id != null ? index.get(id) ?? null : null;
+            return (
+              <div className="flex flex-col gap-1.5">
+                <div className="flex items-baseline justify-between text-sm">
+                  <span className="font-semibold text-slate-900 dark:text-slate-100">
+                    {selected
+                      ? `Change ${selected.webName}`
+                      : `Pick a ${POSITION_LABEL[position].toLowerCase()}`}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setActiveSlot(null)}
+                    className="rounded px-2 py-0.5 text-xs text-slate-500 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 dark:text-slate-400 dark:hover:text-slate-100"
+                  >
+                    Done
+                  </button>
+                </div>
+                <PlayerPicker
+                  key={`${activeSlot}-${openCount}`}
+                  startEditing
+                  slotIndex={activeSlot}
+                  position={position}
+                  selected={selected}
+                  options={byPosition[position]}
+                  pickedIds={pickedIds}
+                  fullClubs={fullClubs}
+                  affordableTenths={squad.bankTenths + (selected?.priceTenths ?? 0)}
+                  onPick={(player) => setPick(activeSlot, player)}
+                />
+              </div>
+            );
+          })()
+        )}
+      </section>
 
       {/* The payoff: a legal fifteen turned into ranked, explained advice.
           Mounted here rather than on its own page so the squad and the answer

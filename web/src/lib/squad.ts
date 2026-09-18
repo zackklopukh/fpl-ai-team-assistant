@@ -87,6 +87,11 @@ export interface SquadPlayer {
   teamFplId: number;
   teamName: string;
   teamShortName: string;
+  /**
+   * The club's stable `code`, for shirt colours. Display only. Not `fpl_id`,
+   * which FPL renumbers every season.
+   */
+  teamCode?: number | null;
   priceTenths: number;
   /** Display only, never a rule input: `players.status` and season points. */
   status?: string | null;
