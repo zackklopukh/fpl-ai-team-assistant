@@ -37,6 +37,7 @@ import {
   parseOptimizeResponse,
   type OptimizeResponse,
 } from "../lib/optimizerTypes";
+import type { NextFixturesByTeam } from "../lib/nextFixtures";
 import type { PlayerIndex, SquadState } from "../lib/squad";
 
 export interface AdvicePanelProps {
@@ -46,6 +47,8 @@ export interface AdvicePanelProps {
   squadValid: boolean;
   /** The gameweek to plan from, when the page knows it. */
   currentGw?: number | null;
+  /** Each club's next opponents, so every player a plan names says who he plays. */
+  nextFixtures?: NextFixturesByTeam;
   /** Injected in tests. Defaults to the global fetch. */
   fetchImpl?: typeof fetch;
 }
@@ -82,6 +85,7 @@ export default function AdvicePanel({
   index,
   squadValid,
   currentGw,
+  nextFixtures,
   fetchImpl,
 }: AdvicePanelProps) {
   const [freeTransfers, setFreeTransfers] = useState(1);
@@ -349,6 +353,7 @@ export default function AdvicePanel({
                     baselineXp={response.baselineXp}
                     index={index}
                     rank={rank}
+                    nextFixtures={nextFixtures}
                   />
                 ))}
               </div>

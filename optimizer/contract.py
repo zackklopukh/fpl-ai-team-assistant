@@ -75,6 +75,14 @@ class Transfer(BaseModel):
             "transfer IN it is the list price paid."
         )
     )
+    xp: float | None = Field(
+        default=None,
+        description=(
+            "Projected points over the plan's horizon, as if he played every "
+            "gameweek. Out versus in is the reason for the move, so it travels "
+            "with the move rather than being left for the UI to guess."
+        ),
+    )
 
 
 class GameweekBreakdown(BaseModel):
@@ -131,3 +139,81 @@ class OptimizeResponse(BaseModel):
             "means the answer is about different players."
         ),
     )
+
+
+# --- The ideal squad ---------------------------------------------------------
+#
+# One calculation serves two pages. With no squad it is "the best £100m team
+# from scratch": every player is bought at list price against `budget`. With a
+# squad it is "my wildcard": every held player can be kept, at his *selling*
+# price, or sold for it, and the money available is `bank` plus what the whole
+# squad fetches. A wildcard is simply a gameweek of unlimited free transfers, so
+# no hit is ever taken, and the fifteen then stay fixed across the horizon while
+# the XI, captain and bench are chosen each gameweek.
+
+
+class IdealSquadRequest(BaseModel):
+    current_gw: int = Field(ge=1, le=38)
+    horizon: int = Field(default=3, ge=1, le=MAX_HORIZON)
+    season: str = "2026-27"
+    squad: list[SquadPlayer] | None = Field(
+        default=None,
+        description="Omit for a team from scratch; give the 15 held for a wildcard",
+    )
+    bank: int = Field(default=0, ge=0, description="Integer tenths. Wildcard only.")
+    budget: int = Field(
+        default=1000,
+        ge=0,
+        le=2000,
+        description="Integer tenths. From-scratch only; 1000 is the £100.0m every manager starts with.",
+    )
+    max_ownership: float | None = Field(
+        default=None, ge=0, le=100, description="Exclude players owned by more than this %"
+    )
+
+
+class IdealPlayer(BaseModel):
+    element_id: int
+    web_name: str
+    element_type: int
+    team_fpl_id: int
+    price: int = Field(description="Integer tenths: today's list price")
+    cost: int = Field(
+        description=(
+            "Integer tenths: what this player costs the budget. The list price for "
+            "a new signing; the selling price for a player the manager already "
+            "holds and keeps, which is what keeping him is worth"
+        )
+    )
+    kept: bool = Field(default=False, description="Wildcard only: already in the manager's squad")
+    xp: float = Field(description="Expected points over the horizon, if he played every gameweek")
+
+
+class IdealSquadResponse(BaseModel):
+    players: list[IdealPlayer] = Field(description="The fifteen, goalkeepers first")
+    xi: list[int] = Field(description="Starting eleven for the first gameweek, element ids")
+    bench_order: list[int] = Field(description="Four bench slots for the first gameweek")
+    captain: int
+    vice_captain: int
+    formation: str = Field(description='e.g. "3-4-3", for the first gameweek')
+    cost: int = Field(description="Integer tenths: total cost of the fifteen to this manager")
+    budget: int = Field(description="Integer tenths: the money that was available")
+    bank_after: int = Field(description="Integer tenths: budget minus cost")
+    total_xp: float = Field(description="XI plus captain, summed over the horizon")
+    per_gw_breakdown: list[GameweekBreakdown] = Field(default_factory=list)
+    kept_count: int | None = Field(default=None, description="Wildcard only: players carried over")
+    gain_vs_hold: float | None = Field(
+        default=None,
+        description=(
+            "Wildcard only: expected points gained over keeping the current squad "
+            "unchanged across the same horizon. The number that says whether the "
+            "wildcard is worth playing now."
+        ),
+    )
+    reasoning: str = ""
+    model_version: str
+    solver_version: str = MIP_VERSION
+    data_as_of: str
+    season: str | None = None
+    solve_ms: int
+    truncated: bool = False

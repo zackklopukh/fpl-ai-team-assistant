@@ -361,6 +361,7 @@ export default function SquadBuilder({
         index={index}
         squadValid={validation.valid}
         currentGw={currentGw}
+        nextFixtures={nextFixtures}
       />
 
       {/* Bank, share and reset. */}

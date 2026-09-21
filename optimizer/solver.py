@@ -317,6 +317,7 @@ def _build(
     decay: float,
     max_transfers_per_gw: int | None,
     forbid_transfers: bool,
+    freeze_after_first: bool = False,
 ) -> tuple[pulp.LpProblem, dict[str, Any]]:
     """Assemble the MIP. Returns the problem and the variable handles to read back."""
     ids = sorted(pool)
@@ -395,6 +396,10 @@ def _build(
         n_in = pulp.lpSum(buy[e][gw] for e in ids)
         if forbid_transfers:
             prob += n_in == 0, f"hold_{gw}"
+        if freeze_after_first and i > 0:
+            # A wildcard rebuilds the squad once, then that squad is what the
+            # manager has: the XI, captain and bench still change each week.
+            prob += n_in == 0, f"freeze_{gw}"
         if max_transfers_per_gw is not None:
             prob += n_in <= max_transfers_per_gw, f"maxin_{gw}"
 
@@ -445,6 +450,7 @@ def _build(
         "hits": hits,
         "honest": pulp.lpSum(honest_terms),
         "gws": gws,
+        "money": money,
     }
     return prob, handles
 
@@ -572,7 +578,12 @@ def _to_plan(
     vice = vice_candidates[0] if vice_candidates else captain
 
     def transfer(eid: int, price: int) -> Transfer:
-        return Transfer(element_id=eid, web_name=pool[eid].web_name, price=price)
+        return Transfer(
+            element_id=eid,
+            web_name=pool[eid].web_name,
+            price=price,
+            xp=round(sum(xp[eid][gw] for gw in gws), 2),
+        )
 
     ins = [transfer(e, pool[e].price) for e in solution.bought_by_gw[g0]]
     outs = [transfer(e, pool[e].price) for e in solution.sold_by_gw[g0]]
@@ -798,3 +809,174 @@ def _apply_cuts(
             prob += pulp.lpSum(moves) <= len(moves) - 1, f"cut_{n}"
         else:
             prob += pulp.lpSum(handles["buy"][e][g0] for e in ids) >= 1, f"cut_{n}"
+
+
+# ---------------------------------------------------------------------------
+# The ideal squad: a team from scratch, or a wildcard
+# ---------------------------------------------------------------------------
+
+
+def solve_squad(
+    squad: Iterable[Any] | None,
+    xp_matrix: Mapping[int, Mapping[int, float]] | None,
+    prices: Any,
+    current_gw: int,
+    horizon: int = 3,
+    *,
+    bank: int = 0,
+    budget: int = 1000,
+    fixtures: Mapping[int, Mapping[int, int]] | None = None,
+    time_limit: float = DEFAULT_TIME_LIMIT,
+    bench_weights: Sequence[float] = BENCH_WEIGHTS,
+    msg: bool = False,
+) -> dict[str, Any]:
+    """The best fifteen for the next `horizon` gameweeks, bought all at once.
+
+    With `squad=None` this is a team from scratch: nothing is held, every player
+    costs his list price, and `budget` is the money. With a squad it is that
+    manager's wildcard: `bank` plus what the fifteen fetch at their selling
+    prices. Keeping a held player costs his selling price, not his list price —
+    which is exactly what the transfer model already does when a player is
+    neither bought nor sold, so the same formulation serves both.
+
+    A wildcard is a gameweek of unlimited free transfers, so no hit is ever
+    taken, and the squad is then frozen for the rest of the horizon while the
+    XI, captain and bench are still chosen gameweek by gameweek.
+
+    Returns the fields of `contract.IdealSquadResponse` that the solver owns;
+    the service adds model_version, data_as_of and season.
+    """
+    started = time.perf_counter()
+    if horizon < 1:
+        raise SolverError("horizon must be at least 1")
+
+    held = _normalise_squad(squad) if squad is not None else []
+    pool = _normalise_pool(prices)
+    missing = [h.element_id for h in held if h.element_id not in pool]
+    if missing:
+        raise SolverError(f"held players missing from the pool: {missing}")
+    if len(bench_weights) < 4:
+        raise SolverError("bench_weights needs four entries")
+
+    gws = list(range(current_gw, current_gw + horizon))
+    xp = _normalise_xp(xp_matrix, pool, gws, prices)
+    fixtures = fixtures or {}
+    selling = {h.element_id: h.selling_price for h in held}
+    money_in = int(bank) + sum(selling.values()) if held else int(budget)
+
+    def remaining() -> float:
+        return time_limit - (time.perf_counter() - started)
+
+    # For a wildcard, the yardstick first: keeping the current fifteen for the
+    # same horizon. That is what "is the wildcard worth playing now" means.
+    hold = None
+    if held:
+        prob, handles = _build(
+            pool=pool, xp=xp, held=held, gws=gws, bank=int(bank), free_transfers=0,
+            bench_weights=bench_weights, decay=1.0, max_transfers_per_gw=None,
+            forbid_transfers=True,
+        )
+        hold = _run(prob, handles, min(remaining(), max(2.0, time_limit * 0.25)), msg)
+        if hold is None:
+            raise SolverError("no legal starting eleven exists for the squad given")
+
+    prob, handles = _build(
+        pool=pool, xp=xp, held=held, gws=gws,
+        bank=int(bank) if held else int(budget),
+        # Enough free transfers to replace everyone: no hit is ever taken.
+        free_transfers=SQUAD_SIZE,
+        bench_weights=bench_weights, decay=1.0, max_transfers_per_gw=None,
+        forbid_transfers=False, freeze_after_first=True,
+    )
+    left = remaining()
+    if left <= 1.0:
+        raise SolverError("no time left to solve")
+    sol = _run(prob, handles, left, msg)
+    if sol is None:
+        raise SolverError(
+            f"no legal fifteen fits a budget of £{money_in / 10:.1f}m "
+            "(the cheapest possible squad costs more)"
+        )
+
+    g0 = gws[0]
+    fifteen = sol.squad_by_gw[g0]
+    xi = sorted(sol.xi_by_gw[g0], key=lambda e: (pool[e].element_type, -xp[e][g0], e))
+    captain = sol.captain_by_gw[g0]
+    vice_pool = sorted((e for e in xi if e != captain), key=lambda e: (-xp[e][g0], e))
+    vice = vice_pool[0] if vice_pool else captain
+
+    def cost_of(e: int) -> int:
+        return selling[e] if e in selling else pool[e].price
+
+    players = [
+        {
+            "element_id": e,
+            "web_name": pool[e].web_name,
+            "element_type": pool[e].element_type,
+            "team_fpl_id": pool[e].team_fpl_id,
+            "price": pool[e].price,
+            "cost": cost_of(e),
+            "kept": e in selling,
+            "xp": round(sum(xp[e][gw] for gw in gws), 3),
+        }
+        for e in sorted(fifteen, key=lambda e: (pool[e].element_type, -sum(xp[e][g] for g in gws), e))
+    ]
+    cost = sum(p["cost"] for p in players)
+
+    counts = {pos: sum(1 for e in xi if pool[e].element_type == pos) for pos in (2, 3, 4)}
+    formation = f"{counts[2]}-{counts[3]}-{counts[4]}"
+
+    breakdown = []
+    for gw in gws:
+        cap = sol.captain_by_gw[gw]
+        breakdown.append(
+            GameweekBreakdown(
+                gw=gw,
+                xp=round(sum(xp[e][gw] for e in sol.xi_by_gw[gw]) + xp[cap][gw], 3),
+                captain_element_id=cap,
+                n_fixtures={
+                    e: int(fixtures[e][gw])
+                    for e in sorted(sol.squad_by_gw[gw])
+                    if e in fixtures and gw in fixtures[e]
+                },
+            )
+        )
+
+    total = round(sol.honest_xp, 3)
+    span = f"GW{gws[0]}" if len(gws) == 1 else f"GW{gws[0]}-{gws[-1]}"
+    kept = sum(1 for p in players if p["kept"])
+    gain = round(sol.honest_xp - hold.honest_xp, 3) if hold is not None else None
+    if hold is None:
+        reasoning = (
+            f"The highest-scoring fifteen for {span} that £{money_in / 10:.1f}m buys, "
+            f"projected at {total:.1f} points with {pool[captain].web_name} captain. "
+            f"£{(money_in - cost) / 10:.1f}m left over."
+        )
+    else:
+        # No verdict on whether to play it: that depends on what the wildcard
+        # would be worth saved for a double or blank gameweek, which this
+        # horizon cannot see. The gain is the fact; the call is the manager's.
+        reasoning = (
+            f"Keeps {kept} of your fifteen and signs {SQUAD_SIZE - kept}, worth "
+            f"{gain:+.1f} points over keeping your current squad across {span}. "
+            "Weigh that against saving the wildcard for a double or blank gameweek."
+        )
+
+    return {
+        "players": players,
+        "xi": xi,
+        "bench_order": _bench_order(sol, g0, pool, xp),
+        "captain": captain,
+        "vice_captain": vice,
+        "formation": formation,
+        "cost": cost,
+        "budget": money_in,
+        "bank_after": money_in - cost,
+        "total_xp": total,
+        "per_gw_breakdown": breakdown,
+        "kept_count": kept if held else None,
+        "gain_vs_hold": gain,
+        "reasoning": reasoning,
+        "truncated": sol.truncated or bool(hold and hold.truncated),
+        "solve_ms": int((time.perf_counter() - started) * 1000),
+    }

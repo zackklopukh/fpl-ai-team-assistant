@@ -8,7 +8,9 @@
  * red shirts apart.
  */
 
-import { readableTextOn, shirtColours } from "@/lib/clubColours";
+// Relative, not "@/": the shirt is rendered inside components the test runner
+// renders, and the test runner has no path aliases.
+import { readableTextOn, shirtColours } from "../lib/clubColours";
 
 export interface ShirtProps {
   teamCode?: number | null;

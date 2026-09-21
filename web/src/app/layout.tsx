@@ -48,7 +48,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
             >
               Squad Lab
             </Link>
-            <div className="flex items-center gap-4 text-sm">
+            <div className="flex items-center gap-3 text-sm sm:gap-4">
               <Link
                 href="/players"
                 className="text-slate-600 transition-colors hover:text-slate-900 dark:text-slate-300 dark:hover:text-white"
@@ -66,6 +66,12 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
                 className="text-slate-600 transition-colors hover:text-slate-900 dark:text-slate-300 dark:hover:text-white"
               >
                 Squad
+              </Link>
+              <Link
+                href="/ideal"
+                className="text-slate-600 transition-colors hover:text-slate-900 dark:text-slate-300 dark:hover:text-white"
+              >
+                Ideal team
               </Link>
               {/* The primary way in: ARCHITECTURE.md makes the API path the
                   main route and the screenshot a fallback, so this is the entry

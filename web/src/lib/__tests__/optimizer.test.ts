@@ -108,7 +108,8 @@ function wireResponse(): WireOptimizeResponse {
       },
       {
         label: "One transfer",
-        transfers_in: [{ element_id: 900, web_name: "Newman", price: 78 }],
+        // `xp` on the buy, none on the sale: the greedy fallback sends none.
+        transfers_in: [{ element_id: 900, web_name: "Newman", price: 78, xp: 12.4 }],
         transfers_out: [{ element_id: 114, web_name: "Player114", price: 59 }],
         hit_cost: 0,
         xi: [100, 102, 103, 104, 107, 108, 109, 110, 112, 113, 900],
@@ -188,8 +189,11 @@ describe("parseOptimizeResponse", () => {
       elementId: 900,
       webName: "Newman",
       priceTenths: 78,
+      xp: 12.4,
     });
     expect(one.transfersOut[0].priceTenths).toBe(59);
+    // Absent is null, never 0: zero would claim the player projects nothing.
+    expect(one.transfersOut[0].xp).toBeNull();
     expect(one.deltaXp).toBe(2.4);
 
     expect(hit.hitCost).toBe(4);
@@ -290,6 +294,23 @@ describe("PlanCard", () => {
     expect(html).toContain("Player114");
     expect(html).toContain("£7.8m");
     expect(html).toContain("£5.9m");
+  });
+
+  it("says who a named player is and links to his stats", () => {
+    // "Sell Player114" alone tells a manager nothing. Club, position and a
+    // link to the player page are what make the advice checkable.
+    const html = render(1);
+    expect(html).toContain('href="/players/114"');
+    expect(html).toContain('target="_blank"');
+    // Player114 is index 14 in the fixture: FWD at club C5.
+    expect(html).toContain("C5 · FWD");
+    // The buy's projected points travel with the move.
+    expect(html).toContain("12.4 pts projected");
+  });
+
+  it("links every player in the working, not just the transfers", () => {
+    const html = render(1);
+    expect(html).toContain('href="/players/100"');
   });
 
   it("frames delta_xp as points against holding and shows the hit", () => {

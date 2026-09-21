@@ -44,6 +44,8 @@ from optimizer import solver
 from optimizer.contract import (
     GREEDY_VERSION,
     MIP_VERSION,
+    IdealSquadRequest,
+    IdealSquadResponse,
     OptimizeRequest,
     OptimizeResponse,
     Plan,
@@ -381,4 +383,105 @@ def optimize(req: OptimizeRequest) -> OptimizeResponse:
         _cache[key] = response
         while len(_cache) > CACHE_MAX_ENTRIES:
             _cache.popitem(last=False)
+    return response
+
+
+# --- The ideal squad ---------------------------------------------------------
+
+
+def _ideal_cache_key(req: IdealSquadRequest, snapshot: XPSnapshot) -> str:
+    """Everything that changes the answer. A from-scratch request is the same for
+    every visitor, so after the first solve it is a cache hit for all of them."""
+    payload = {
+        "kind": "ideal",
+        "squad": sorted((s.element_id, s.selling_price) for s in req.squad) if req.squad else None,
+        "bank": req.bank if req.squad else None,
+        "budget": None if req.squad else req.budget,
+        "gw": req.current_gw,
+        "horizon": req.horizon,
+        "max_ownership": req.max_ownership,
+        "season": req.season,
+        "model_version": snapshot.model_version,
+        "data_as_of": snapshot.generated_at,
+        "xp_source": snapshot.source,
+        "time_limit": SOLVER_TIME_LIMIT_S,
+        "pool": POOL_PER_POSITION,
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
+@app.post("/squad/ideal", response_model=IdealSquadResponse)
+def ideal_squad(req: IdealSquadRequest) -> IdealSquadResponse:
+    """The best fifteen for the horizon: from scratch, or as a wildcard.
+
+    No greedy fallback here. Greedy improves a squad one swap at a time; it
+    cannot build one from nothing, so a failure is reported, not papered over.
+    """
+    snapshot = _load_snapshot(req.season)
+
+    squad_ids: list[int] = []
+    if req.squad is not None:
+        if len(req.squad) != 15:
+            raise HTTPException(
+                status_code=422,
+                detail=f"a wildcard needs the 15 players held, got {len(req.squad)}",
+            )
+        squad_ids = [s.element_id for s in req.squad]
+        missing = snapshot.missing(squad_ids)
+        if missing:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"no xP data for element_ids {sorted(missing)} in season {req.season}. "
+                    "Ids are reassigned between seasons -- check the season on the request."
+                ),
+            )
+        try:
+            validate_squad([snapshot.players[e] for e in squad_ids])
+        except SquadError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    key = _ideal_cache_key(req, snapshot)
+    cached = _cache.get(key)
+    if cached is not None:
+        _cache.move_to_end(key)
+        return cached
+
+    gws = _horizon(req, snapshot)
+    started = time.perf_counter()
+    pool = candidate_pool(
+        snapshot,
+        squad_ids,
+        gws,
+        max_ownership=req.max_ownership,
+        per_position=POOL_PER_POSITION,
+    )
+
+    try:
+        result = solver.solve_squad(
+            req.squad,
+            None,  # read xp_by_gw off the PlayerXP pool objects
+            pool,
+            gws[0],
+            len(gws),
+            bank=req.bank,
+            budget=req.budget,
+            fixtures=snapshot.fixtures_matrix(p.element_id for p in pool),
+            time_limit=SOLVER_TIME_LIMIT_S,
+        )
+    except solver.SolverError as exc:
+        # An impossible budget is the caller's to fix, and says so plainly.
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    result["solve_ms"] = int(round((time.perf_counter() - started) * 1000))
+    response = IdealSquadResponse(
+        **result,
+        model_version=snapshot.model_version,
+        solver_version=MIP_VERSION,
+        data_as_of=snapshot.generated_at,
+        season=snapshot.season,
+    )
+    _cache[key] = response
+    while len(_cache) > CACHE_MAX_ENTRIES:
+        _cache.popitem(last=False)
     return response

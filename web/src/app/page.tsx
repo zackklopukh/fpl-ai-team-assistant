@@ -57,7 +57,7 @@ export default async function Home() {
         </div>
       </section>
 
-      <section className="mt-16 grid gap-6 sm:grid-cols-3">
+      <section className="mt-16 grid gap-6 sm:grid-cols-2">
         <Card
           title="Read the pool"
           body="Every player, sortable by price, form, total points and ownership, with injury and suspension status spelled out rather than colour-coded."
@@ -69,6 +69,12 @@ export default async function Home() {
           body="Pick fifteen players against a £100.0m budget. Your squad lives in your browser and in the URL — nothing is stored here, because there are no accounts."
           href="/squad"
           linkLabel="Squad builder"
+        />
+        <Card
+          title="The ideal fifteen"
+          body="The best team for the next few gameweeks, from scratch on any budget or as a wildcard from your own squad — on the pitch, with the reasoning."
+          href="/ideal"
+          linkLabel="Ideal team"
         />
         <Card
           title="See the reasoning"

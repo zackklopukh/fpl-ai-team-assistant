@@ -73,6 +73,8 @@ export interface WireTransfer {
   element_id: number;
   web_name: string;
   price: number;
+  /** Projected points over the horizon. Absent from the greedy fallback. */
+  xp?: number | null;
 }
 
 export interface WireGameweekBreakdown {
@@ -121,6 +123,11 @@ export interface Transfer {
   webName: string;
   /** Integer tenths. Banked on a sale, paid on a buy — see contract.py. */
   priceTenths: number;
+  /**
+   * Projected points over the plan's horizon. Out versus in is the reason for
+   * the move. Null when the service did not send it (the greedy fallback).
+   */
+  xp: number | null;
 }
 
 export interface GameweekBreakdown {
@@ -208,6 +215,7 @@ function parseTransfer(raw: unknown): Transfer {
     elementId: num(t.element_id),
     webName: str(t.web_name, `Player ${num(t.element_id)}`),
     priceTenths: num(t.price),
+    xp: typeof t.xp === "number" && Number.isFinite(t.xp) ? t.xp : null,
   };
 }
 
@@ -367,4 +375,177 @@ export function describeDetail(detail: unknown): string | null {
 export function detailFromBody(body: unknown): unknown {
   if (!body || typeof body !== "object" || Array.isArray(body)) return undefined;
   return (body as { detail?: unknown }).detail;
+}
+
+// ---------------------------------------------------------------------------
+// The ideal fifteen — POST /squad/ideal
+//
+// contract.py: IdealSquadRequest, IdealPlayer, IdealSquadResponse. Two modes
+// share one shape: omit `squad` for a team from scratch against `budget`, or
+// send the fifteen held plus `bank` for a wildcard.
+//
+// `price` and `cost` are different numbers on purpose. `price` is today's list
+// price; `cost` is what the player costs *this manager's* budget — the list
+// price for a new signing, the selling price for a player already held and
+// kept. On a wildcard the difference between the two is the whole reason the
+// budget is not £100.0m.
+// ---------------------------------------------------------------------------
+
+export interface IdealSquadRequest {
+  current_gw: number;
+  horizon: number;
+  season: string;
+  /** Omit (or null) for from-scratch; the fifteen held for a wildcard. */
+  squad?: OptimizeSquadPlayer[] | null;
+  /** Integer tenths. Wildcard only. */
+  bank: number;
+  /** Integer tenths. From-scratch only; 1000 is £100.0m. */
+  budget: number;
+  max_ownership: number | null;
+}
+
+/** contract.py: `budget: int = Field(ge=0, le=2000)`. */
+export const MAX_IDEAL_BUDGET_TENTHS = 2000;
+export const DEFAULT_IDEAL_BUDGET_TENTHS = 1000;
+
+export interface WireIdealPlayer {
+  element_id: number;
+  web_name: string;
+  element_type: number;
+  team_fpl_id: number;
+  price: number;
+  cost: number;
+  kept: boolean;
+  xp: number;
+}
+
+export interface WireIdealSquadResponse {
+  players: WireIdealPlayer[];
+  xi: number[];
+  bench_order: number[];
+  captain: number;
+  vice_captain: number;
+  formation: string;
+  cost: number;
+  budget: number;
+  bank_after: number;
+  total_xp: number;
+  per_gw_breakdown: WireGameweekBreakdown[];
+  kept_count: number | null;
+  gain_vs_hold: number | null;
+  reasoning: string;
+  model_version: string;
+  solver_version: string;
+  data_as_of: string;
+  season: string | null;
+  solve_ms: number;
+  truncated: boolean;
+}
+
+export interface IdealPlayer {
+  elementId: number;
+  webName: string;
+  /** 1 GKP, 2 DEF, 3 MID, 4 FWD. */
+  elementType: number;
+  teamFplId: number;
+  /** Integer tenths: today's list price. */
+  priceTenths: number;
+  /** Integer tenths: what he costs this budget — selling price if kept. */
+  costTenths: number;
+  /** Wildcard only: already in the manager's squad. */
+  kept: boolean;
+  /** Expected points over the horizon, if he played every gameweek. */
+  xp: number;
+}
+
+export interface IdealSquadResponse {
+  /** The fifteen, goalkeepers first. */
+  players: IdealPlayer[];
+  xi: number[];
+  benchOrder: number[];
+  captain: number;
+  viceCaptain: number;
+  formation: string;
+  /** Integer tenths: total cost of the fifteen to this manager. */
+  costTenths: number;
+  /** Integer tenths: the money that was available. */
+  budgetTenths: number;
+  /** Integer tenths: budget minus cost. */
+  bankAfterTenths: number;
+  totalXp: number;
+  perGwBreakdown: GameweekBreakdown[];
+  /** Wildcard only; null from scratch. */
+  keptCount: number | null;
+  /** Wildcard only; null from scratch. Expected points over holding. */
+  gainVsHold: number | null;
+  reasoning: string;
+  modelVersion: string;
+  solverVersion: string;
+  dataAsOf: string;
+  season: string | null;
+  solveMs: number;
+  truncated: boolean;
+}
+
+function nullableNum(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  const n = num(value, Number.NaN);
+  return Number.isFinite(n) ? n : null;
+}
+
+export function parseIdealPlayer(raw: unknown): IdealPlayer {
+  const p = (raw ?? {}) as Partial<WireIdealPlayer>;
+  const price = num(p.price);
+  return {
+    elementId: num(p.element_id),
+    webName: str(p.web_name, `Player ${num(p.element_id)}`),
+    elementType: num(p.element_type),
+    teamFplId: num(p.team_fpl_id),
+    priceTenths: price,
+    // A service that stops sending `cost` means list price, never zero: zero
+    // would read as a free player and make the totals look wrong.
+    costTenths: p.cost === undefined || p.cost === null ? price : num(p.cost, price),
+    kept: p.kept === true,
+    xp: num(p.xp),
+  };
+}
+
+/**
+ * A wire body to the ideal-squad shape the page renders.
+ *
+ * Missing `players` is refused for the same reason missing `plans` is: without
+ * them this is not a degraded answer, it is a different service.
+ */
+export function parseIdealSquadResponse(raw: unknown): IdealSquadResponse {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new MalformedResponseError("The optimizer returned something that is not a squad.");
+  }
+  const r = raw as Partial<WireIdealSquadResponse>;
+  if (!Array.isArray(r.players)) {
+    throw new MalformedResponseError("The optimizer returned a result with no players in it.");
+  }
+  return {
+    players: r.players.map(parseIdealPlayer),
+    xi: intList(r.xi),
+    benchOrder: intList(r.bench_order),
+    captain: num(r.captain),
+    viceCaptain: num(r.vice_captain),
+    formation: str(r.formation),
+    costTenths: num(r.cost),
+    budgetTenths: num(r.budget),
+    bankAfterTenths: num(r.bank_after),
+    totalXp: num(r.total_xp),
+    perGwBreakdown: Array.isArray(r.per_gw_breakdown)
+      ? r.per_gw_breakdown.map(parseGameweekBreakdown)
+      : [],
+    keptCount: nullableNum(r.kept_count),
+    gainVsHold: nullableNum(r.gain_vs_hold),
+    reasoning: str(r.reasoning),
+    modelVersion: str(r.model_version, "unknown"),
+    solverVersion: str(r.solver_version, "unknown"),
+    dataAsOf: str(r.data_as_of),
+    season: typeof r.season === "string" ? r.season : null,
+    solveMs: num(r.solve_ms),
+    truncated: r.truncated === true,
+  };
 }

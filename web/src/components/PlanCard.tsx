@@ -22,8 +22,10 @@
 
 import { useId, useState } from "react";
 
+import PlayerChip from "./PlayerChip";
 import { formatPrice } from "../lib/format";
-import { isHoldPlan, type Plan } from "../lib/optimizerTypes";
+import type { NextFixturesByTeam } from "../lib/nextFixtures";
+import { isHoldPlan, type Plan, type Transfer } from "../lib/optimizerTypes";
 import type { PlayerIndex } from "../lib/squad";
 
 export interface PlanCardProps {
@@ -34,6 +36,42 @@ export interface PlanCardProps {
   index: PlayerIndex;
   /** 0 is the recommended plan. */
   rank: number;
+  /**
+   * Each club's opponents next gameweek, so a named player shows who he plays.
+   * Optional: without it the chips simply leave the opponent out.
+   */
+  nextFixtures?: NextFixturesByTeam;
+}
+
+/** "GW6-8" from the plan's own breakdown, so the xP figures say what they cover. */
+function horizonOf(plan: Plan): string | undefined {
+  const gws = plan.perGwBreakdown.map((w) => w.gw);
+  if (gws.length === 0) return undefined;
+  const lo = Math.min(...gws);
+  const hi = Math.max(...gws);
+  return lo === hi ? `in GW${lo}` : `over GW${lo}–${hi}`;
+}
+
+/** Total projected points for a side of the move, or null if any is unknown. */
+function sideXp(transfers: readonly Transfer[]): number | null {
+  if (transfers.length === 0 || transfers.some((t) => t.xp === null)) return null;
+  return transfers.reduce((sum, t) => sum + (t.xp as number), 0);
+}
+
+/** A name that links to the player's page, with who he is on hover. */
+function PlayerLink({ index, elementId }: { index: PlayerIndex; elementId: number }) {
+  const meta = playerMeta(index, elementId);
+  return (
+    <a
+      href={`/players/${elementId}`}
+      target="_blank"
+      rel="noopener"
+      title={meta ? `${meta} — opens his stats in a new tab` : "Opens his stats in a new tab"}
+      className="underline decoration-slate-300 underline-offset-2 hover:decoration-sky-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 dark:decoration-slate-600"
+    >
+      {playerName(index, elementId)}
+    </a>
+  );
 }
 
 /** One decimal, signed, for a points delta. Points are not money. */
@@ -57,7 +95,13 @@ function playerMeta(index: PlayerIndex, elementId: number): string | null {
   return player ? `${player.position} · ${player.teamShortName}` : null;
 }
 
-export default function PlanCard({ plan, baselineXp, index, rank }: PlanCardProps) {
+export default function PlanCard({
+  plan,
+  baselineXp,
+  index,
+  rank,
+  nextFixtures,
+}: PlanCardProps) {
   const [open, setOpen] = useState(false);
   const breakdownId = useId();
 
@@ -69,6 +113,14 @@ export default function PlanCard({ plan, baselineXp, index, rank }: PlanCardProp
   // The horizon total this plan expects. Δ is stated after hits, so adding it to
   // the baseline gives the number the manager would actually score.
   const planXp = baselineXp + plan.deltaXp;
+
+  const horizon = horizonOf(plan);
+  const outXp = sideXp(plan.transfersOut);
+  const inXp = sideXp(plan.transfersIn);
+  const opponentsOf = (elementId: number) => {
+    const player = index.get(elementId);
+    return nextFixtures && player ? nextFixtures[player.teamFplId] : undefined;
+  };
 
   return (
     <article
@@ -155,15 +207,18 @@ export default function PlanCard({ plan, baselineXp, index, rank }: PlanCardProp
                   {plan.transfersOut.map((transfer) => (
                     <li
                       key={`out-${transfer.elementId}`}
-                      className="flex items-baseline justify-between gap-2 text-sm text-slate-800 dark:text-slate-100"
+                      className="text-sm text-slate-800 dark:text-slate-100"
                     >
-                      <span>{transfer.webName}</span>
-                      <span
-                        className="tabular-nums text-slate-500 dark:text-slate-400"
-                        title="What you bank — the reconstructed selling price, not the list price"
-                      >
-                        {formatPrice(transfer.priceTenths)}
-                      </span>
+                      <PlayerChip
+                        elementId={transfer.elementId}
+                        index={index}
+                        fallbackName={transfer.webName}
+                        opponents={opponentsOf(transfer.elementId)}
+                        priceTenths={transfer.priceTenths}
+                        priceLabel="What you bank: your selling price, not the list price"
+                        xp={transfer.xp}
+                        horizonLabel={horizon}
+                      />
                     </li>
                   ))}
                 </ul>
@@ -178,18 +233,38 @@ export default function PlanCard({ plan, baselineXp, index, rank }: PlanCardProp
                   {plan.transfersIn.map((transfer) => (
                     <li
                       key={`in-${transfer.elementId}`}
-                      className="flex items-baseline justify-between gap-2 text-sm text-slate-800 dark:text-slate-100"
+                      className="text-sm text-slate-800 dark:text-slate-100"
                     >
-                      <span>{transfer.webName}</span>
-                      <span className="tabular-nums text-slate-500 dark:text-slate-400">
-                        {formatPrice(transfer.priceTenths)}
-                      </span>
+                      <PlayerChip
+                        elementId={transfer.elementId}
+                        index={index}
+                        fallbackName={transfer.webName}
+                        opponents={opponentsOf(transfer.elementId)}
+                        priceTenths={transfer.priceTenths}
+                        priceLabel="What he costs you: today's list price"
+                        xp={transfer.xp}
+                        horizonLabel={horizon}
+                      />
                     </li>
                   ))}
                 </ul>
               </dd>
             </div>
           </dl>
+        )}
+        {!hold && outXp !== null && inXp !== null && (
+          // The reason for the move, in one line: what leaves against what
+          // arrives, before the hit. delta_xp above is the net after hits and
+          // lineup changes, so the two need not match.
+          <p className="mt-3 text-xs text-slate-600 dark:text-slate-300">
+            Projected {horizon ?? "over the horizon"}:{" "}
+            <span className="tabular-nums">{outXp.toFixed(1)}</span> out,{" "}
+            <span className="tabular-nums">{inXp.toFixed(1)}</span> in (
+            <span className="tabular-nums font-medium">
+              {formatDelta(inXp - outXp)}
+            </span>{" "}
+            before any hit, if everyone played every week).
+          </p>
         )}
       </div>
 
@@ -199,13 +274,13 @@ export default function PlanCard({ plan, baselineXp, index, rank }: PlanCardProp
         <div>
           <dt className="text-xs text-slate-500 dark:text-slate-400">Captain</dt>
           <dd className="font-medium text-slate-900 dark:text-slate-50">
-            {playerName(index, plan.captain)}
+            <PlayerLink index={index} elementId={plan.captain} />
           </dd>
         </div>
         <div>
           <dt className="text-xs text-slate-500 dark:text-slate-400">Vice</dt>
           <dd className="font-medium text-slate-900 dark:text-slate-50">
-            {playerName(index, plan.viceCaptain)}
+            <PlayerLink index={index} elementId={plan.viceCaptain} />
           </dd>
         </div>
         <div>
@@ -257,7 +332,7 @@ export default function PlanCard({ plan, baselineXp, index, rank }: PlanCardProp
                       : "border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300",
                   ].join(" ")}
                 >
-                  {playerName(index, elementId)}
+                  <PlayerLink index={index} elementId={elementId} />
                   {elementId === plan.captain && " (C)"}
                   {elementId === plan.viceCaptain && " (V)"}
                 </li>
@@ -277,7 +352,7 @@ export default function PlanCard({ plan, baselineXp, index, rank }: PlanCardProp
                   className="rounded border border-dashed border-slate-300 px-2 py-0.5 text-xs text-slate-600 dark:border-slate-700 dark:text-slate-400"
                 >
                   <span className="tabular-nums text-slate-400">{position + 1}.</span>{" "}
-                  {playerName(index, elementId)}
+                  <PlayerLink index={index} elementId={elementId} />
                 </li>
               ))}
             </ol>
