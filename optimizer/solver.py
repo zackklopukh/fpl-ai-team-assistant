@@ -530,8 +530,19 @@ def _reasoning(solution: _Solution, gws: Sequence[int], delta: float) -> str:
     g0 = gws[0]
     n = len(solution.bought_by_gw[g0])
     later = sum(len(solution.bought_by_gw[g]) for g in gws[1:])
-    if n == 0:
-        bits = [f"No transfer beats holding over GW{g0}-{gws[-1]}."]
+    # This function sees one plan, never the others, so it must not claim how a
+    # plan ranks. "No transfer beats holding" used to appear here and read as
+    # false whenever a transfer plan outscored the Hold printed just above it.
+    if n == 0 and later == 0:
+        bits = [
+            f"Keep this squad unchanged over GW{g0}-{gws[-1]}. Every other plan's "
+            "gain is measured against this one."
+        ]
+    elif n == 0:
+        bits = [
+            f"No transfer this week: bank it and use it later, worth {delta:+.2f} "
+            "points over the horizon."
+        ]
     else:
         bits = [f"{n} transfer{'s' if n != 1 else ''} now, worth {delta:+.2f} points over the horizon"]
         if solution.hits_by_gw[g0]:

@@ -63,6 +63,14 @@ _CREATE_TABLE = re.compile(
     re.IGNORECASE,
 )
 
+# Columns added after a database was first built are declared as idempotent
+# ALTERs at the end of the schema file. They are part of the schema too.
+_ADD_COLUMN = re.compile(
+    r"alter\s+table\s+(?:if\s+exists\s+)?([a-z_][a-z0-9_]*)\s+"
+    r"add\s+column\s+(?:if\s+not\s+exists\s+)?([a-z_][a-z0-9_]*)",
+    re.IGNORECASE,
+)
+
 
 # --- Parsing db/schema.sql -------------------------------------------------
 
@@ -129,6 +137,11 @@ def parse_schema(sql: str) -> dict[str, list[str]]:
             columns.append(first)
 
         tables[table] = columns
+
+    for match in _ADD_COLUMN.finditer(clean):
+        table, column = match.group(1), match.group(2).lower()
+        if column not in tables.setdefault(table, []):
+            tables[table].append(column)
 
     return tables
 

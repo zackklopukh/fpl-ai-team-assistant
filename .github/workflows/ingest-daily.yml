@@ -142,11 +142,23 @@ jobs:
         with:
           python-version: "3.14"
           cache: pip
-          cache-dependency-path: ingest/requirements.txt
+          cache-dependency-path: |
+            ingest/requirements.txt
+            ingest/requirements-model.txt
+      # The fitted and boosted models need numpy, pandas and scikit-learn. Only
+      # this job installs them; the frequent sync jobs stay light.
       - name: Install dependencies
-        run: python -m pip install -r ingest/requirements.txt
-      - name: Recompute xPoints
+        run: python -m pip install -r ingest/requirements-model.txt
+      - name: Recompute xPoints (every model, side by side)
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           FPL_USER_AGENT: ${{ secrets.FPL_USER_AGENT }}
-        run: python ingest/compute_xp.py
+        run: python ingest/run.py xp
+      # Read-only. Grades each model on finished gameweeks using only the
+      # prediction it froze at the deadline, so the live-model decision can be
+      # revisited on evidence nobody tuned on. The table lands in the run log.
+      - name: Grade the models
+        if: always()
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python ingest/run.py score

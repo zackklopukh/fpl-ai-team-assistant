@@ -121,6 +121,30 @@ def _verify(args: argparse.Namespace) -> int:
     return verify_db.main(["--season", args.season])
 
 
+def _score(args: argparse.Namespace) -> int:
+    import score_models
+
+    return score_models.main(["--season", args.season])
+
+
+def _publish_xp(args: argparse.Namespace) -> int:
+    import publish_xp
+
+    argv = ["--season", args.season]
+    if args.out:
+        argv += ["--out", args.out]
+    return publish_xp.main(argv)
+
+
+def _import_history(args: argparse.Namespace) -> int:
+    import import_history
+
+    argv = ["--seasons", *args.seasons] if args.seasons else []
+    if args.dry_run:
+        argv.append("--dry-run")
+    return import_history.main(argv)
+
+
 def _season(args: argparse.Namespace) -> int:
     import season
 
@@ -179,6 +203,16 @@ def _season_job_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--exit-code", action="store_true", help="exit 1 when off-season"
     )
+
+
+def _publish_args(parser: argparse.ArgumentParser) -> None:
+    _season_arg(parser)
+    parser.add_argument("--out", default=None, help="artifact path (default: git-ignored data/)")
+
+
+def _history_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--seasons", nargs="*", default=None, help="default: 2023-24 to 2025-26")
+    parser.add_argument("--dry-run", action="store_true")
 
 
 JOBS: dict[str, Job] = {
@@ -242,6 +276,33 @@ JOBS: dict[str, Job] = {
             writes="player_gw_stats — historical rows with per-gameweek prices",
             call=_backfill,
             add_arguments=_backfill_args,
+        ),
+        Job(
+            name="score",
+            summary=(
+                "Grade every xP model on this season's finished gameweeks, "
+                "using only the prediction each had frozen at the deadline."
+            ),
+            schedule="nightly after xp, and by hand when deciding the live model",
+            writes="nothing — read only",
+            call=_score,
+            add_arguments=_season_arg,
+        ),
+        Job(
+            name="publish-xp",
+            summary="Write the live model's xP artifact for the optimizer.",
+            schedule="after xp, once artifact delivery is decided",
+            writes="a JSON file — never the database",
+            call=_publish_xp,
+            add_arguments=_publish_args,
+        ),
+        Job(
+            name="import-history",
+            summary="Load past seasons from the public vaastav dataset.",
+            schedule="once, and when a season ends",
+            writes="teams, players, fixtures, player_gw_stats — source='history'",
+            call=_import_history,
+            add_arguments=_history_args,
         ),
         Job(
             name="verify",

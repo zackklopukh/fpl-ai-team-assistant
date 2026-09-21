@@ -313,3 +313,30 @@ create table if not exists ingest_runs (
 );
 
 create index if not exists ingest_runs_job on ingest_runs (job, started_at desc);
+
+-- ---------------------------------------------------------------------------
+-- Additive changes
+--
+-- `create table if not exists` does not alter a table that already exists, so
+-- columns added after a database was first built go here as idempotent ALTERs.
+-- Re-running this file on an existing database brings it up to date.
+-- ---------------------------------------------------------------------------
+
+-- FPL's own expected points for a player-gameweek, as recorded by the
+-- historical dataset (vaastav/Fantasy-Premier-League, `xP` in merged_gw.csv).
+-- Null for rows synced live from the API, which exposes no historical projection.
+--
+-- NOT A FAIR BENCHMARK FOR ITS OWN GAMEWEEK. It was captured after the gameweek
+-- was played and already reflects the result: players who score 10+ show an xP
+-- about 3 points higher that week than the week before, and no rise after,
+-- which a genuine forecast cannot do. Correlation with same-week points is 0.73
+-- against 0.46 for the previous week's figure, in every season. Never use a
+-- row's fpl_xp to predict or score that row's own gameweek. The previous
+-- gameweek's value is the honest proxy for what FPL showed before a deadline;
+-- the backtest calls it `fpl_xp_lag`.
+alter table player_gw_stats add column if not exists fpl_xp numeric(8,3);
+
+-- Where a row came from: 'api' for the live and backfill jobs, 'history' for
+-- the season import. Lets a backtest reason about provenance, and lets a bad
+-- import be deleted without touching live data.
+alter table player_gw_stats add column if not exists source text not null default 'api';

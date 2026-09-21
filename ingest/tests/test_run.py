@@ -31,6 +31,9 @@ EXPECTED_JOBS = {
     "backfill",
     "verify",
     "season",
+    "score",
+    "publish-xp",
+    "import-history",
 }
 
 

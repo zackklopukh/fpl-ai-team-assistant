@@ -40,7 +40,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 import db
-from config import SEASON
+from config import LIVE_MODEL_VERSION, SEASON
 from xp.features import MINUTES_WINDOW, build_features, group_stat_rows
 from xp.model import MODEL_VERSION, FixtureContext, expected_points
 
@@ -56,17 +56,32 @@ XPOINTS_KEYS = ("season", "element_id", "gw", "model_version")
 
 
 def plan_gameweeks(
-    gameweek_rows: Sequence[Mapping[str, Any]], horizon: int = HORIZON
+    gameweek_rows: Sequence[Mapping[str, Any]],
+    horizon: int = HORIZON,
+    now: datetime | None = None,
 ) -> tuple[int, list[int]]:
     """Return (as_of_gw, target gameweeks).
 
     `as_of_gw` is the last finished gameweek and is the cutoff every feature is
-    built against. The targets are the next `horizon` unfinished gameweeks —
-    taken from the gameweek list rather than from `as_of_gw + 1` so that a
-    postponed or renumbered event does not silently shift the window.
+    built against. The targets are the next `horizon` gameweeks whose deadline
+    is still ahead — taken from the gameweek list rather than from
+    `as_of_gw + 1` so that a postponed or renumbered event does not silently
+    shift the window.
+
+    A gameweek that has kicked off but not finished is NOT a target. Its
+    prediction was frozen at the deadline, and that frozen row is what
+    score_models.py grades. Rewriting it mid-gameweek would fold in team news
+    from after the deadline and quietly flatter every model's score. Rows
+    without a `deadline_time` fall back to the finished flag alone.
     """
+    now = now or datetime.now(UTC)
     finished = [int(r["gw"]) for r in gameweek_rows if r["finished"]]
-    upcoming = sorted(int(r["gw"]) for r in gameweek_rows if not r["finished"])
+    upcoming = sorted(
+        int(r["gw"])
+        for r in gameweek_rows
+        if not r["finished"]
+        and (r.get("deadline_time") is None or r["deadline_time"] > now)
+    )
 
     as_of_gw = max(finished) if finished else 0
     return as_of_gw, upcoming[:horizon]
@@ -209,7 +224,7 @@ def load_inputs(
     """
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(
-            "select gw, finished from gameweeks where season = %s order by gw",
+            "select gw, finished, deadline_time from gameweeks where season = %s order by gw",
             (season,),
         )
         gameweeks = cur.fetchall()
@@ -281,7 +296,59 @@ def _for_db(rows: Sequence[dict[str, Any]], computed_at: datetime) -> list[dict[
     ]
 
 
-def main(season: str = SEASON) -> int:
+# Every model computed nightly. Each writes its own rows under its own
+# model_version, never overwriting another's, so all of them are graded on the
+# same gameweeks by score_models.py. Only config.LIVE_MODEL_VERSION is published.
+MODELS = ("baseline-0.1", "fitted-0.1", "gbm-0.1")
+
+
+def _baseline_rows(conn, season, players, as_of_gw, target_gws):
+    return build_xp_rows(
+        season=season,
+        player_rows=players,
+        stat_rows=load_history(conn, season, as_of_gw),
+        fixture_rows=load_fixtures(conn, season, target_gws, as_of_gw),
+        target_gws=target_gws,
+        as_of_gw=as_of_gw,
+    )
+
+
+def _fitted_rows(conn, season, players, as_of_gw, target_gws):
+    from xp.fitted_live import build_live_rows
+
+    return build_live_rows(conn, season, target_gws)
+
+
+def _gbm_rows(conn, season, players, as_of_gw, target_gws):
+    import pandas as pd
+
+    from backtest.data import History, load_tables
+    from xp.gbm import compute_live
+
+    live = pd.DataFrame(
+        [
+            {
+                "element_id": p["element_id"],
+                "team_fpl_id": p["team_fpl_id"],
+                "status": p["status"],
+                "chance_of_playing_next_round": p["chance_of_playing_next_round"],
+            }
+            for p in players
+        ]
+    )
+    return compute_live(
+        History(load_tables(conn)), season, live, target_gws=target_gws, as_of_gw=as_of_gw
+    )
+
+
+_BUILDERS = {
+    "baseline-0.1": _baseline_rows,
+    "fitted-0.1": _fitted_rows,
+    "gbm-0.1": _gbm_rows,
+}
+
+
+def main(season: str = SEASON, models: Sequence[str] = MODELS) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
     with db.connect() as conn:
@@ -290,8 +357,8 @@ def main(season: str = SEASON) -> int:
             as_of_gw, target_gws = plan_gameweeks(gameweeks)
 
             if not target_gws:
-                # The off-season, or a season whose gameweeks have all finished.
-                log.info("%s: no upcoming gameweeks for %s — nothing to do", JOB, season)
+                # The off-season, or every remaining deadline has passed.
+                log.info("%s: no upcoming deadlines for %s — nothing to do", JOB, season)
                 return 0
 
             log.info(
@@ -300,25 +367,38 @@ def main(season: str = SEASON) -> int:
                 season,
                 as_of_gw,
                 target_gws,
-                MODEL_VERSION,
+                ", ".join(models),
             )
 
-            rows = build_xp_rows(
-                season=season,
-                player_rows=players,
-                stat_rows=load_history(conn, season, as_of_gw),
-                fixture_rows=load_fixtures(conn, season, target_gws, as_of_gw),
-                target_gws=target_gws,
-                as_of_gw=as_of_gw,
-            )
+            computed_at = datetime.now(UTC)
+            failed: list[str] = []
+            for version in models:
+                # One model failing must not stop the others from being
+                # predicted — a gameweek with no frozen prediction can never be
+                # scored for that model — so each is isolated and rolled back
+                # on its own.
+                try:
+                    rows = _BUILDERS[version](conn, season, players, as_of_gw, target_gws)
+                    if {r["model_version"] for r in rows} - {version}:
+                        raise ValueError(f"{version} produced rows for another version")
+                    written = db.upsert(
+                        conn, "xpoints", _for_db(rows, computed_at), list(XPOINTS_KEYS)
+                    )
+                    conn.commit()
+                    result["rows"] += written
+                    log.info("%s: %s wrote %d rows", JOB, version, written)
+                except Exception:
+                    conn.rollback()
+                    failed.append(version)
+                    log.exception("%s: %s failed", JOB, version)
 
-            result["rows"] = db.upsert(
-                conn,
-                "xpoints",
-                _for_db(rows, datetime.now(UTC)),
-                conflict_keys=list(XPOINTS_KEYS),
-            )
-            conn.commit()
+            # A shadow model failing is logged and survivable. The live model
+            # failing is not: the site would keep serving stale numbers, so the
+            # run is marked failed where the operator will see it.
+            if LIVE_MODEL_VERSION in failed:
+                raise RuntimeError(f"live model {LIVE_MODEL_VERSION} failed; see log")
+            if failed:
+                log.warning("%s: shadow model(s) failed: %s", JOB, ", ".join(failed))
 
     return result["rows"]
 

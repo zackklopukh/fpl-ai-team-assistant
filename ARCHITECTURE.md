@@ -290,7 +290,14 @@ Each phase ends with something that runs and that you can show someone. The orde
 
 **Phase 6 — The real xP model.** Ongoing. Backfill historical gameweek stats, build the decomposed model, evaluate it against actual points. This is the part with no finish line, which is exactly why it comes after a shipped product.
 
-**Phase 7 — The MIP solver.** Ongoing. Replace the greedy function with the PuLP formulation, add the multi-gameweek horizon, tune the bench weight.
+*Status, 2026-09-21.* Three completed seasons (2023-24 to 2025-26) are imported from the public vaastav dataset, and `ingest/backtest/` evaluates any model walk-forward through an `AsOf` view that holds nothing from the target gameweek onward. Two things were learned that the rest of this document did not anticipate:
+
+- **The historical dataset's FPL xP is post-hoc.** It was captured after each gameweek and already reflects the result (players who score 10+ show about 3 points more xP that same week, and no rise after). It is not a benchmark a pre-deadline model can be held to; the previous week's value is the honest proxy.
+- **One held-out season cannot separate good models.** A fitted statistical model (`fitted-0.1`) and a gradient-boosting model (`gbm-0.1`) both beat the hand-tuned `baseline-0.1` clearly on the season they were developed on, and not measurably on the holdout: every 95% interval on squad points and ranking crossed zero. The pre-committed tie-break chose the fitted model, because every prediction explains itself.
+
+So all three are computed nightly and graded weekly on this season's gameweeks by `ingest/score_models.py`, each only on the prediction it froze at the deadline. The live model is `config.LIVE_MODEL_VERSION`. Revisit the choice around GW15, when this season has supplied enough evidence that no model was tuned on.
+
+**Phase 7 — The MIP solver.** Done: the service runs the PuLP formulation over a multi-gameweek horizon, fed a published artifact of the live model's xP (`ingest/publish_xp.py`), with greedy kept only as a labelled fallback. Tuning the bench weight is still open, and so is how production receives the artifact.
 
 ### Two things to do in phase 1, not later
 

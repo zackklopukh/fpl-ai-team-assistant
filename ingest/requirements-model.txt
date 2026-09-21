@@ -1,0 +1,11 @@
+# Modelling dependencies: fitting, the gradient-boosting challenger and the
+# backtest. Separate from requirements.txt so the lightweight sync jobs, which
+# run every 15-30 minutes on GitHub Actions, do not install scipy on every run.
+#
+# scikit-learn's HistGradientBoostingRegressor stands in for LightGBM. It is the
+# same histogram-based algorithm, but its wheels bundle OpenMP, whereas LightGBM
+# on macOS needs a system libomp that this machine does not have.
+-r requirements.txt
+numpy==2.5.3
+pandas==3.0.6
+scikit-learn==1.9.1

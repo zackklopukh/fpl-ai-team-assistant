@@ -123,3 +123,11 @@ class OptimizeResponse(BaseModel):
     truncated: bool = Field(
         default=False, description="True when the solver hit its time limit and returned an incumbent"
     )
+    season: str | None = Field(
+        default=None,
+        description=(
+            "Season of the xP data the answer was computed from. Element ids are "
+            "reassigned between seasons, so a mismatch with the request's season "
+            "means the answer is about different players."
+        ),
+    )

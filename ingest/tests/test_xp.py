@@ -656,3 +656,36 @@ class TestPlanGameweeks:
 
         assert as_of_gw == 38
         assert targets == []
+
+    def test_a_gameweek_in_progress_is_not_re_predicted(self):
+        """Its prediction was frozen at the deadline; that row is what gets graded.
+
+        Rewriting it mid-gameweek would fold in team news from after the
+        deadline and flatter every model in score_models.py. This is the exact
+        state the live database was in on 2026-09-21: GW5's deadline had passed
+        but GW5 was not finished.
+        """
+        from datetime import UTC, datetime, timedelta
+
+        now = datetime(2026, 9, 21, 12, 0, tzinfo=UTC)
+        rows = [
+            {"gw": 4, "finished": True, "deadline_time": now - timedelta(days=9)},
+            {"gw": 5, "finished": False, "deadline_time": now - timedelta(days=3)},
+            {"gw": 6, "finished": False, "deadline_time": now + timedelta(days=19)},
+            {"gw": 7, "finished": False, "deadline_time": now + timedelta(days=26)},
+        ]
+
+        as_of_gw, targets = plan_gameweeks(rows, horizon=5, now=now)
+
+        assert as_of_gw == 4
+        assert targets == [6, 7]
+
+    def test_a_gameweek_is_still_predicted_up_to_its_deadline(self):
+        from datetime import UTC, datetime, timedelta
+
+        now = datetime(2026, 10, 10, 9, 59, tzinfo=UTC)
+        rows = [{"gw": 6, "finished": False, "deadline_time": now + timedelta(minutes=1)}]
+
+        _, targets = plan_gameweeks(rows, horizon=5, now=now)
+
+        assert targets == [6]

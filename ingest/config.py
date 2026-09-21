@@ -24,6 +24,14 @@ SEASON = os.getenv("FPL_SEASON", "2026-27")
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+# The xP model the site and the optimizer actually use. Every model in
+# compute_xp.MODELS is computed nightly and scored weekly (score_models.py), but
+# only this one is published. Chosen 2026-09-21: on a one-season holdout the
+# fitted, boosted and baseline models were statistically indistinguishable, and
+# the pre-committed tie-break favours the explainable fitted model. Revisit with
+# this season's scores around GW15.
+LIVE_MODEL_VERSION = os.getenv("FPL_LIVE_MODEL", "fitted-0.1")
+
 # Positions, as FPL numbers them. Squad composition is fixed by the rules.
 POSITIONS = {1: "GKP", 2: "DEF", 3: "MID", 4: "FWD"}
 SQUAD_COMPOSITION = {1: 2, 2: 5, 3: 5, 4: 3}
