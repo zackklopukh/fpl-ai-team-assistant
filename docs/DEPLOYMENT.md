@@ -38,27 +38,32 @@ The cron schedule in `.github/workflows/` fires roughly:
 
 | Workflow | Schedule | Runs/month (30 days) |
 | --- | --- | --- |
-| `ingest-bootstrap` | every 2 hours, in season | ~1,440 |
+| `ingest-bootstrap` | every 2 hours, in season | ~360 |
 | `ingest-live` | every 15 min inside match windows | ~1,045 |
 | `ingest-daily` | 3 crons a day | ~90 |
-| | **total** | **~2,560** |
+| | **total** | **~1,495** |
 
-GitHub bills Actions in **whole minutes, rounded up per job**, so ~2,560 runs is
-at least ~2,560 minutes even though most of these jobs finish in twenty seconds.
+GitHub bills Actions in **whole minutes, rounded up per job**, so ~1,495 runs is
+at least ~1,495 minutes even though most of these jobs finish in twenty seconds.
+(The nightly xP job, which now fits three models, is the one exception: a few
+minutes a night, ~90-150 a month.)
 The free allowance on a **private** repository is **2,000 minutes/month**. The
 allowance on a **public** repository is **unlimited**.
 
-So this is a real fork in the road, and there are only three honest options:
+Bootstrap was every 30 minutes originally (~2,560 runs a month, over the private
+allowance); at every 2 hours it fits either way. The options, if the schedule
+ever grows again:
 
 1. **Make the repository public.** Free, unlimited, and the recommended path —
    there are no secrets in the source, only in Actions secrets. This is the
    default assumption of everything below.
 2. **Keep it private and pay.** Roughly $0.008/minute beyond the free tier, so
    ~560 minutes over ≈ $4.50/month. Small, but it is no longer a free project.
-3. **Keep it private and cut the schedule.** Halving `ingest-bootstrap` to
-   hourly brings the total to ~1,840 and fits — at the cost of staler prices and
-   injury news, which matters most in the 24 hours before a deadline, which is
-   exactly when people use the tool.
+3. **Keep it private and cut the schedule** — which is what every-2-hours
+   already is, at the cost of staler prices and injury news. That matters most
+   in the 24 hours before a deadline, exactly when people use the tool, so a
+   deadline-aware bump (`ingest/season.py` has `should_sync_often`) is the
+   better next step than a flat rate.
 
 The off-season guard in `ingest-bootstrap` and `ingest-live` already removes
 roughly a quarter of the year, so the annual average is lower than the in-season
@@ -88,8 +93,8 @@ one and they are not interchangeable:
 | String | Address family | Use it for |
 | --- | --- | --- |
 | Direct connection (`db.<ref>.supabase.co:5432`) | **IPv6 only** on new projects | local `psql`, local dev on an IPv6 network |
-| Session pooler (`aws-0-<region>.pooler.supabase.com:5432`) | IPv4 | **Vercel**, GitHub Actions, anything that might not have IPv6 |
-| Transaction pooler (port `6543`) | IPv4 | short-lived serverless connections; no prepared statements |
+| Session pooler (`aws-0-<region>.pooler.supabase.com:5432`) | IPv4 | GitHub Actions and local ingestion — long-lived jobs |
+| Transaction pooler (same host, port `6543`) | IPv4 | **the web app** — serverless, many short-lived clients |
 
 New Supabase projects no longer get a dedicated IPv4 address for the direct
 connection. If a network has no IPv6 route — and Vercel's build and serverless
@@ -98,13 +103,38 @@ simply fails to resolve or times out, with an error that looks like a firewall
 problem rather than an address-family problem. **This has bitten people. If
 `DATABASE_URL` times out from Vercel but works from your laptop, this is why.**
 
-Use the **session pooler** string for `DATABASE_URL` in Vercel and in GitHub
-Actions unless you have a specific reason not to. `web/src/lib/db.ts` keeps a
-small pool (max 3) and the transaction pooler's restrictions are not worth the
-trouble at this scale.
+Set `DATABASE_URL` to the **session pooler** string everywhere — Vercel,
+GitHub Actions and your `.env`. One value, and the code picks the mode:
+
+- **The web app switches itself to the transaction pooler** (port 6543, same
+  host and credentials) in `web/src/lib/pg.ts`. It has to. Session mode pins a
+  database connection to each client for as long as the client stays
+  connected, and Supabase allows **15** in total. Vercel runs several instances
+  that keep their sockets open while frozen between requests, so session mode
+  runs out — this took the live site down on 2026-09-22 with
+  `EMAXCONNSESSION max clients reached in session mode`. Transaction mode lends
+  a connection only for the length of each query.
+- **The Python jobs stay on the session pooler.** psycopg auto-prepares named
+  statements, which transaction mode does not support; they are few,
+  long-lived connections, which is what session mode is for.
+
+**Keep one pool in the web app.** `web/src/lib/pg.ts` is the only place a
+`pg.Pool` is created, capped at 2 connections per instance. A second pool per
+module was the other half of that outage.
+
+If the database is configured but unreachable, the site now shows an error
+rather than silently serving the 159-player seed — the seed is used only when
+`DATABASE_URL` is not configured at all. A "missing from our price list" or
+"database is busy" message in production means a connection problem, not a
+data problem.
+
+**If you paste a string yourself, percent-encode the password.** A `#` in it
+starts a URL fragment and silently cuts off everything after it; write it as
+`%23`. `python ingest/find_pooler.py --write` does this for you and finds your
+region.
 
 Note also: Supabase pauses a free project after about a week of inactivity. The
-ingestion cron writes every 30 minutes, so in season it never idles — but a
+ingestion cron writes every 2 hours, so in season it never idles — but a
 project created in June and left alone until August **will** be paused when you
 come back to it. Unpause it from the dashboard.
 
@@ -117,30 +147,43 @@ squad plus a price list and returns recommendations. Do not give it a
 `DATABASE_URL`, ever.
 
 ```bash
+.venv/bin/python ingest/publish_xp.py    # write data/xp_artifact.local.json first
 pip install modal
-modal token new                      # opens a browser, writes ~/.modal.toml
+modal token new                          # opens a browser, writes ~/.modal.toml
 modal deploy optimizer/modal_app.py
 ```
 
+**The xP data is baked into the image at deploy time.** `modal_app.py` copies in
+only the `optimizer/` package and `data/xp_artifact.local.json` — never the repo
+root, which holds `.env` — and refuses to deploy if the artifact is missing, so
+it can never silently serve synthetic data. The consequence: production xP does
+not refresh on its own. After each gameweek, re-run `publish_xp.py` and
+`modal deploy`. Replacing that with a fetch at container start is the open
+"how does production receive the artifact" decision (ARCHITECTURE.md, Phase 7).
+
 `modal deploy` prints the deployed URL — something like
 `https://<workspace>--fpl-optimizer-fastapi-app.modal.run`. That value is what
-goes into `OPTIMIZER_URL` in Vercel.
+goes into `OPTIMIZER_URL` in Vercel. Redeploy the Vercel project after setting
+it; environment variables apply only to new deployments.
 
 Verify it before wiring it up:
 
 ```bash
-curl -s "$OPTIMIZER_URL/health"
-curl -s -X POST "$OPTIMIZER_URL/optimize" \
+curl -s "$OPTIMIZER_URL/health"          # want "synthetic": false and the live model_version
+curl -s -X POST "$OPTIMIZER_URL/squad/ideal" \
   -H 'content-type: application/json' \
-  -d '{"squad":[],"bank":0,"free_transfers":1,"current_gw":1,"horizon":1}'
+  -d '{"current_gw":6,"horizon":1,"budget":1000}'
 ```
+
+The first request after an idle spell cold-starts in ~4s; a solve takes 1-8s
+depending on the horizon. The web app allows 25s.
 
 `modal serve optimizer/modal_app.py` gives a hot-reloading ephemeral deployment
 for checking the image without publishing. Locally, the same FastAPI app runs
 under uvicorn with no Modal involved:
 
 ```bash
-.venv/bin/uvicorn optimizer.app:app --port 8000
+.venv/bin/python -m uvicorn optimizer.app:app --port 8000
 ```
 
 which is why `OPTIMIZER_URL` defaults to `http://127.0.0.1:8000` in

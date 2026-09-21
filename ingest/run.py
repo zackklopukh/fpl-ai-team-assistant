@@ -221,7 +221,7 @@ JOBS: dict[str, Job] = {
         Job(
             name="bootstrap",
             summary="Sync bootstrap-static into players, teams and gameweeks.",
-            schedule="every 30 minutes in season",
+            schedule="every 2 hours in season",
             writes="players, teams, gameweeks — prices, status, injury news",
             call=_bootstrap,
             add_arguments=None,

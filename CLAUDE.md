@@ -4,7 +4,7 @@ Guidance for Claude Code working in this repository.
 
 ## What this is
 
-A Fantasy Premier League squad rater and optimizer. Two deployables:
+A Fantasy Premier League squad rater and optimizer, in three parts:
 
 - `web/` — Next.js (App Router) on Vercel. Public, read-only, **no user accounts**.
 - `optimizer/` — FastAPI on Modal. Stateless solver. Never touches the database.
@@ -43,6 +43,13 @@ Violating any of these breaks correctness in ways that are hard to detect later.
 - Recommendations are logged anonymously (`squad_hash`, gameweek, version, payload).
   This is the only way the model ever gets evaluated — don't remove it.
 - Timestamps in UTC. The gameweek deadline is the clock everything derives from.
+- Every xP model in `compute_xp.MODELS` is computed nightly; only
+  `config.LIVE_MODEL_VERSION` is published to the optimizer. A model's prediction
+  for a gameweek is frozen at that gameweek's deadline, and `score_models.py`
+  grades only frozen predictions — never rewrite a gameweek after its deadline.
+- The web app has exactly one Postgres pool, in `web/src/lib/pg.ts`, on Supabase's
+  transaction pooler (it rewrites port 5432 to 6543). The Python jobs use the
+  session pooler. See `docs/DEPLOYMENT.md`.
 
 ## Stack, for reference
 
@@ -70,6 +77,13 @@ incumbent solution rather than proving optimality.
 - Don't train on current-value fields (price, ownership, form, season-to-date xG) when
   predicting a past gameweek. That is lookahead leakage and it invalidates every
   evaluation number downstream.
+- Don't use a historical row's `fpl_xp` to predict or score its own gameweek. The
+  source captured it after the gameweek was played; it already contains the result.
+- Don't create a second `pg.Pool` in the web app. Three per-module pools exhausted
+  Supabase's 15-connection session pooler and took the live site down.
+- Don't fall back to the checked-in seed when a *configured* database fails. The
+  seed is for an unconfigured clone only; in production it served a 159-player
+  sample and blamed users' squads for the gap.
 
 ## Working style
 

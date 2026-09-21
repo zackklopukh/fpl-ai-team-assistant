@@ -11,10 +11,13 @@ failure is always safe**. You never have to reason about partial state.
 
 | Job | `run.py` name | Schedule (UTC) | Writes |
 | --- | --- | --- | --- |
-| `sync_bootstrap.py` | `bootstrap` | every 30 min in season | `players`, `teams`, `gameweeks` — prices, status, injury news |
+| `sync_bootstrap.py` | `bootstrap` | every 2 hours in season | `players`, `teams`, `gameweeks` — prices, status, injury news |
 | `snapshot_prices.py` | `prices` | daily 01:45 | `price_history` — one row per player per day |
 | `sync_fixtures.py` | `fixtures` | daily 04:00 | `fixtures` — FDR, kickoffs, results |
-| `compute_xp.py` | `xp` | nightly 05:00 | `xpoints` for the next 5 gameweeks |
+| `compute_xp.py` | `xp` | nightly 05:00 | `xpoints` for the next 5 gameweeks, **for every model** (`baseline-0.1`, `fitted-0.1`, `gbm-0.1`) side by side |
+| `score_models.py` | `score` | nightly, after `xp` | nothing (read only) — grades each model on finished gameweeks using the prediction it froze at the deadline |
+| `publish_xp.py` | `publish-xp` | before each optimizer deploy | a JSON artifact of the **live** model's xP for the optimizer — never the database |
+| `import_history.py` | `import-history` | once, and when a season ends | past seasons from the public vaastav dataset, `source='history'` |
 | `sync_live.py` | `live` | every 15 min in match windows | `player_gw_stats` — bonus provisional |
 | `settle_bonus.py` | `settle-bonus` | ~2h after the last match | `player_gw_stats` — final bonus, `bonus_settled = true` |
 | `backfill_history.py` | `backfill` | manual, and once on a fresh database | `player_gw_stats` — historical rows |
@@ -56,6 +59,14 @@ Do these in order. Each one depends on the last: `players` has a foreign key ont
 `teams`, `player_gw_stats` onto `players`, and the model reads both.
 
 ```bash
+# 0. Dependencies. requirements-model.txt includes requirements.txt and adds
+#    numpy, pandas and scikit-learn, which the xP models need.
+python -m pip install -r ingest/requirements-model.txt
+
+# 0b. The connection string. Finds your pooler region, percent-encodes the
+#     password (a `#` silently truncates the URL), writes it to .env.
+python ingest/find_pooler.py --write
+
 # 1. Apply the schema. Supabase SQL editor, or psql:
 psql "$DATABASE_URL" -f db/schema.sql
 
@@ -68,13 +79,21 @@ python ingest/run.py bootstrap
 # 4. Fixtures for the whole season.
 python ingest/run.py fixtures
 
-# 5. Historical per-gameweek stats. Slow — see below. Start it and leave it.
+# 5. This season's per-gameweek stats so far. Slow — see below.
 python ingest/run.py backfill
 
-# 6. Expected points for the next five gameweeks.
+# 6. Past seasons, for the models to learn from (~14s; 2023-24 to 2025-26).
+python ingest/run.py import-history
+
+# 7. Expected points for the next five gameweeks, every model side by side.
+#    Without steps 5 and 6 the minutes model has almost nothing to go on and
+#    projects nonsense — publish-xp refuses to ship that, but xp will write it.
 python ingest/run.py xp
 
-# 7. Confirm. Every table should now have rows and ingest_runs a clean history.
+# 8. The live model's artifact for the optimizer.
+python ingest/run.py publish-xp
+
+# 9. Confirm. Every table should now have rows and ingest_runs a clean history.
 python ingest/run.py verify
 ```
 

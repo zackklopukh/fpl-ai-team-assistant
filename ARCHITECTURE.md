@@ -246,7 +246,7 @@ One rule governs this whole layer: **never call the FPL API from a request a use
 
 | Job | Schedule (UTC) | Writes |
 | --- | --- | --- |
-| Bootstrap sync | Every 30 min in-season | `players`, `teams`, `gameweeks` — prices, status, injury flags |
+| Bootstrap sync | Every 2 hours in-season (planned: 30 min; cut to fit free Actions minutes) | `players`, `teams`, `gameweeks` — prices, status, injury flags |
 | Price snapshot | Daily 01:45 | `price_history` — run just after FPL's nightly price changes |
 | Fixtures | Daily 04:00 | `fixtures` — FDR and kickoff changes |
 | Live results | Every 15 min during matches | `player_gw_stats` — from the `event/{gw}/live/` endpoint |
@@ -284,7 +284,11 @@ Each phase ends with something that runs and that you can show someone. The orde
 
 **Phase 3 — The optimal £100m squad.** Week 3. A page that solves for the best possible squad from scratch, given the current player pool and prices. This is the right third feature for a no-accounts product: it needs zero user input, zero state, and no parsing, and it exercises the solver end to end. It is also the page people will link to each other. *Done when:* a public URL shows a solved squad that updates as prices change.
 
+*Status, 2026-09-22: done* — `/ideal`, backed by `solver.solve_squad`. The same MIP also serves the wildcard: a gameweek of unlimited free transfers against the manager's own budget, where a kept player costs his *selling* price, then the fifteen frozen for the horizon.
+
 **Phase 4 — Squad entry and rating.** Week 4. Manual 15-player picker, `localStorage` persistence, URL encoding, and a call to the stub optimizer that returns one greedy transfer suggestion. *Done when:* a user builds a squad, gets a score and a suggestion, shares the link, and it reopens correctly.
+
+*Status: done*, and past it — the builder is a pitch of club-colour shirts, the suggestion is the full MIP rather than a greedy swap, and a squad can also be imported exactly from an FPL team ID (`/import`), which is now the primary way in. Every player named in advice links to his stats.
 
 **Phase 5 — Screenshot ingestion.** Weeks 5–6. Canvas preprocessing, Tesseract.js, fuzzy match, confirmation UI, vision fallback. *Done when:* a user gets a correct squad without touching the manual builder.
 
@@ -308,7 +312,7 @@ So all three are computed nightly and graded weekly on this season's gameweeks b
 
 With client-side OCR handling most uploads and no accounts to store, this runs at genuinely zero marginal cost. The vision fallback is the only usage-scaled line and lands around $1–$2 a month at a thousand uploads. The first forced payment is Vercel Pro at $20/mo, triggered not by traffic but by the moment the project becomes commercial.
 
-One useful side effect: Supabase pauses free projects after about a week of inactivity, and your ingestion cron writes every 30 minutes, so it never idles.
+One useful side effect: Supabase pauses free projects after about a week of inactivity, and your ingestion cron writes every 2 hours, so it never idles.
 
 Dropping accounts also deletes three whole categories of hazard — credential handling, personal-data retention, and per-user abuse quotas. Worth remembering if you are ever tempted to add login for a feature that does not truly need it.
 

@@ -7,11 +7,11 @@ script on a schedule or runs the tests.
 
 | File | Trigger | What it runs |
 | --- | --- | --- |
-| `ingest-bootstrap.yml` | every 30 min, in season | `sync_bootstrap.py` — players, teams, gameweeks: prices, status, injury flags |
-| `ingest-daily.yml` | 01:45, 04:00, 05:00 UTC | `snapshot_prices.py`, then `sync_fixtures.py`, then `compute_xp.py` |
-| `ingest-live.yml` | every 15 min inside match windows | `sync_live.py` — `player_gw_stats` from `event/{gw}/live/` |
+| `ingest-bootstrap.yml` | every 2 hours, in season | `sync_bootstrap.py` — players, teams, gameweeks: prices, status, injury flags |
+| `ingest-daily.yml` | 01:45, 04:00, 05:00 UTC | `snapshot_prices.py`, then `sync_fixtures.py`, then `run.py xp` — every xP model side by side — and `run.py score`, which grades them |
+| `ingest-live.yml` | every 15 min inside match windows | `run.py live` — `player_gw_stats` from `event/{gw}/live/` — then `run.py settle-bonus` |
 | `ingest-backfill.yml` | manual only | `backfill_history.py` — historical gameweek stats |
-| `tests.yml` | push, pull request | pytest for `ingest/` and `optimizer/`, typecheck and build for `web/` |
+| `tests.yml` | push, pull request | pytest for `ingest/` and `optimizer/` (installs `requirements-model.txt`), `npm run typecheck` (`next typegen` then `tsc`) and build for `web/` |
 
 `ingest-daily.yml` holds three crons in one file because the jobs share setup
 and have a real ordering — prices, then fixtures, then the model that reads
@@ -45,6 +45,21 @@ for the new season are published in June, which is exactly when you want them.
 
 Set both in **Settings → Secrets and variables → Actions → Repository
 secrets**. They are referenced as `secrets.*` and never inlined.
+
+**Repository secrets, not Environment secrets.** A secret saved under an
+Environment (Vercel's GitHub integration creates one called "Production") is
+only given to a job that declares `environment: Production`, and none of these
+do — so the job sees an empty `DATABASE_URL` and fails as if it were never set.
+`gh secret list` shows repository secrets; if yours is missing there, that is
+why. From the repo root, without the value ever appearing on screen:
+
+```bash
+grep '^DATABASE_URL=' .env | cut -d= -f2- | tr -d '"' | gh secret set DATABASE_URL
+grep '^FPL_USER_AGENT=' .env | cut -d= -f2- | gh secret set FPL_USER_AGENT
+```
+
+Use the **session pooler** string (port 5432). The Python jobs need session
+mode; only the web app uses the transaction pooler, and it switches itself.
 
 | Secret | Value |
 | --- | --- |
