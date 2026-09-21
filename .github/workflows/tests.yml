@@ -29,12 +29,17 @@ jobs:
           cache: pip
           cache-dependency-path: |
             ingest/requirements.txt
+            ingest/requirements-model.txt
             optimizer/requirements.txt
 
+      # requirements-model.txt includes requirements.txt and adds numpy, pandas
+      # and scikit-learn, which the backtest, the fitted and boosted models and
+      # the weekly scorer all import. The tests cover all of them, so CI needs
+      # the full set even though the frequent sync jobs deliberately do not.
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r ingest/requirements.txt
+          python -m pip install -r ingest/requirements-model.txt
           python -m pip install -r optimizer/requirements.txt
 
       - name: pytest ingest
