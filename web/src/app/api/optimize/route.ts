@@ -26,6 +26,7 @@
 import { NextResponse } from "next/server";
 
 import { SEASON } from "@/lib/db";
+import { getPool } from "@/lib/pg";
 import {
   FAILURE_STATUS,
   buildLogRow,
@@ -50,36 +51,12 @@ export const dynamic = "force-dynamic";
 // fresh clone gets a working page instead of an auth error.
 // ---------------------------------------------------------------------------
 
-const CONNECTION_STRING = process.env.DATABASE_URL?.trim();
-
-function isConfigured(url: string | undefined): url is string {
-  if (!url) return false;
-  if (/PASSWORD|PROJECT_REF|REPLACE_WITH/i.test(url)) return false;
-  return url.startsWith("postgres://") || url.startsWith("postgresql://");
-}
-
-// Imported lazily so a build without `pg` reachable, or an unconfigured clone,
-// never pays for the driver at module load.
-type PgPool = { query: (sql: string, params: unknown[]) => Promise<unknown> };
-let poolPromise: Promise<PgPool | null> | null = null;
-
-function getPool(): Promise<PgPool | null> {
-  if (!isConfigured(CONNECTION_STRING)) return Promise.resolve(null);
-  if (!poolPromise) {
-    poolPromise = import("pg")
-      .then(
-        (pg) =>
-          new pg.Pool({
-            connectionString: CONNECTION_STRING,
-            max: 2,
-            idleTimeoutMillis: 10_000,
-            connectionTimeoutMillis: 5_000,
-            ssl: { rejectUnauthorized: false },
-          }) as unknown as PgPool,
-      )
-      .catch(() => null);
-  }
-  return poolPromise;
+// The shared pool (lib/pg.ts). This route used to open its own, which was one
+// of three pools per server instance that together exhausted Supabase's
+// session pooler — and, never stripping `sslmode`, it could not connect anyway,
+// so the log was silently empty.
+function getLogPool() {
+  return getPool();
 }
 
 let logNoticeLogged = false;
@@ -91,7 +68,7 @@ let logNoticeLogged = false;
  * recommendation is the user's, the log is ours.
  */
 async function logRecommendation(row: RecommendationLogRow): Promise<void> {
-  const pool = await getPool();
+  const pool = getLogPool();
   if (!pool) {
     if (!logNoticeLogged) {
       logNoticeLogged = true;

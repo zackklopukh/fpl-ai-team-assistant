@@ -15,7 +15,9 @@
  * buildable and reviewable without credentials.
  */
 
-import { Pool, type PoolClient, type QueryResultRow } from "pg";
+import type { QueryResultRow } from "pg";
+
+import { DatabaseUnavailableError, getPool, isConfigured } from "@/lib/pg";
 
 import seed from "@/lib/seed/players.json";
 import type {
@@ -35,64 +37,11 @@ import type {
 
 const CONNECTION_STRING = process.env.DATABASE_URL?.trim();
 
-/**
- * A connection string still holding the placeholder from .env.example counts as
- * unconfigured — better a working seed page than a confusing auth error.
- */
-function isConfigured(url: string | undefined): url is string {
-  if (!url) return false;
-  if (/PASSWORD|PROJECT_REF|REPLACE_WITH/i.test(url)) return false;
-  return url.startsWith("postgres://") || url.startsWith("postgresql://");
-}
-
-/**
- * Strip `sslmode` from the connection string.
- *
- * node-postgres builds its own TLS config from an `sslmode` in the URL, and that
- * takes precedence over the `ssl` option passed to the Pool — so a string
- * carrying `?sslmode=require` fails against Supabase with "self-signed
- * certificate in certificate chain" no matter what the Pool says. psycopg wants
- * the parameter and node-postgres cannot live with it, so the one string in .env
- * keeps it and this strips it on the way past.
- */
-function withoutSslMode(url: string): string {
-  try {
-    const parsed = new URL(url);
-    parsed.searchParams.delete("sslmode");
-    return parsed.toString();
-  } catch {
-    // A string too malformed to parse is one the Pool will reject anyway, with a
-    // better message than anything invented here.
-    return url;
-  }
-}
-
 export const SEASON = process.env.FPL_SEASON?.trim() || seed.season;
-
-let pool: Pool | null = null;
-
-function getPool(): Pool | null {
-  if (!isConfigured(CONNECTION_STRING)) return null;
-  if (!pool) {
-    pool = new Pool({
-      connectionString: withoutSslMode(CONNECTION_STRING),
-      max: 3,
-      idleTimeoutMillis: 10_000,
-      connectionTimeoutMillis: 5_000,
-      // Supabase terminates TLS with its own CA; the data is public reference
-      // data, so verification is not the security boundary here.
-      ssl: { rejectUnauthorized: false },
-    });
-    pool.on("error", (err) => {
-      console.error("[db] idle client error:", err.message);
-    });
-  }
-  return pool;
-}
 
 let seedNoticeLogged = false;
 
-function fallbackToSeed(reason: string): "seed" {
+function fallbackToSeed(reason: string): void {
   if (!seedNoticeLogged) {
     seedNoticeLogged = true;
     console.warn(
@@ -100,9 +49,18 @@ function fallbackToSeed(reason: string): "seed" {
         "Set DATABASE_URL to read the real database.",
     );
   }
-  return "seed";
 }
 
+/**
+ * Run a query on the shared pool (lib/pg.ts).
+ *
+ * Returns null — and the caller uses the checked-in seed — ONLY when no
+ * database is configured, which is a fresh clone or a preview without
+ * credentials. A configured database that fails throws instead. Falling back
+ * there once served a 159-player sample to real users, and the import page
+ * reported their squads as "missing from our price list" when the truth was
+ * that the connection pool was full. A visible error beats a plausible lie.
+ */
 async function query<T extends QueryResultRow>(
   sql: string,
   params: unknown[] = [],
@@ -112,18 +70,12 @@ async function query<T extends QueryResultRow>(
     fallbackToSeed("DATABASE_URL is not configured");
     return null;
   }
-  let client: PoolClient | undefined;
   try {
-    client = await p.connect();
-    const result = await client.query<T>(sql, params);
+    const result = await p.query<T>(sql, params);
     return result.rows;
   } catch (err) {
-    fallbackToSeed(
-      `query failed: ${err instanceof Error ? err.message : String(err)}`,
-    );
-    return null;
-  } finally {
-    client?.release();
+    console.error("[db] query failed:", err instanceof Error ? err.message : err);
+    throw new DatabaseUnavailableError(err);
   }
 }
 

@@ -18,6 +18,7 @@
 import { NextResponse } from "next/server";
 
 import { SEASON, dataSource, getPlayers } from "@/lib/db";
+import { DatabaseUnavailableError } from "@/lib/pg";
 import { FplError, fetchManagerPayloads } from "@/lib/fpl";
 import { squadImportLimiter } from "@/lib/rateLimit";
 import {
@@ -112,7 +113,22 @@ export async function GET(
     return fail(500, "Something went wrong rebuilding that squad.");
   }
 
-  const players = await getPlayers(SEASON);
+  // The price list comes from our database. If that is unreachable, say so —
+  // valuing the squad against the 159-player sample instead is what produced
+  // "missing from our price list" for real squads when the pool was full.
+  let players: Awaited<ReturnType<typeof getPlayers>>;
+  try {
+    players = await getPlayers(SEASON);
+  } catch (err) {
+    if (err instanceof DatabaseUnavailableError) {
+      return fail(
+        503,
+        "Our player database is busy or unreachable right now, so the squad cannot be valued. Try again in a minute.",
+        { "Retry-After": "30" },
+      );
+    }
+    throw err;
+  }
   const prices = buildPriceList(players.map(toPriceRow));
 
   let squad: ReconstructedSquad;

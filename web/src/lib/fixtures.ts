@@ -36,8 +36,9 @@
  * files this round.
  */
 
-import { Pool, type PoolClient, type QueryResultRow } from "pg";
+import type { QueryResultRow } from "pg";
 
+import { DatabaseUnavailableError, getPool, isConfigured } from "./pg";
 import seed from "./seed/fixtures.json";
 import type { DataSource, Team } from "./types";
 
@@ -150,47 +151,7 @@ export interface FixtureTickerData {
 
 const CONNECTION_STRING = process.env.DATABASE_URL?.trim();
 
-function isConfigured(url: string | undefined): url is string {
-  if (!url) return false;
-  if (/PASSWORD|PROJECT_REF|REPLACE_WITH/i.test(url)) return false;
-  return url.startsWith("postgres://") || url.startsWith("postgresql://");
-}
-
-/**
- * See the note in lib/db.ts: node-postgres derives its TLS config from an
- * `sslmode` in the URL and that beats the `ssl` option, so Supabase fails with
- * "self-signed certificate in certificate chain" until the parameter is removed.
- */
-function withoutSslMode(url: string): string {
-  try {
-    const parsed = new URL(url);
-    parsed.searchParams.delete("sslmode");
-    return parsed.toString();
-  } catch {
-    return url;
-  }
-}
-
 export const SEASON = process.env.FPL_SEASON?.trim() || seed.season;
-
-let pool: Pool | null = null;
-
-function getPool(): Pool | null {
-  if (!isConfigured(CONNECTION_STRING)) return null;
-  if (!pool) {
-    pool = new Pool({
-      connectionString: withoutSslMode(CONNECTION_STRING),
-      max: 3,
-      idleTimeoutMillis: 10_000,
-      connectionTimeoutMillis: 5_000,
-      ssl: { rejectUnauthorized: false },
-    });
-    pool.on("error", (err) => {
-      console.error("[fixtures] idle client error:", err.message);
-    });
-  }
-  return pool;
-}
 
 let seedNoticeLogged = false;
 
@@ -204,6 +165,11 @@ function fallbackToSeed(reason: string): void {
   }
 }
 
+/**
+ * Run a query on the shared pool (lib/pg.ts). Null — use the seed — only when
+ * no database is configured; a configured database that fails throws. See the
+ * matching note in lib/db.ts for why a silent fallback was worse than an error.
+ */
 async function query<T extends QueryResultRow>(
   sql: string,
   params: unknown[] = [],
@@ -213,18 +179,12 @@ async function query<T extends QueryResultRow>(
     fallbackToSeed("DATABASE_URL is not configured");
     return null;
   }
-  let client: PoolClient | undefined;
   try {
-    client = await p.connect();
-    const result = await client.query<T>(sql, params);
+    const result = await p.query<T>(sql, params);
     return result.rows;
   } catch (err) {
-    fallbackToSeed(
-      `query failed: ${err instanceof Error ? err.message : String(err)}`,
-    );
-    return null;
-  } finally {
-    client?.release();
+    console.error("[fixtures] query failed:", err instanceof Error ? err.message : err);
+    throw new DatabaseUnavailableError(err);
   }
 }
 
